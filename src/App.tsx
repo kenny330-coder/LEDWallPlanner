@@ -113,8 +113,21 @@ const DashboardContent: React.FC = () => {
           try {
             const data = JSON.parse(xhr.responseText);
             if (data && data.version && data.version !== pkg.version) {
-              // Compare versions safely (e.g. 1.0.8 > 1.0.7)
-              const isNewer = data.version.localeCompare(pkg.version, undefined, { numeric: true, sensitivity: 'base' }) > 0;
+              console.log(`[Update Check] Remote: v${data.version} | Local: v${pkg.version}`);
+
+              // Standard semver comparator (handles 1.0.10 vs 1.0.9 accurately across all JS engines)
+              const parseSemVer = (v: string) => v.replace(/[^0-9.]/g, '').split('.').map(Number);
+              const vRemote = parseSemVer(data.version);
+              const vLocal = parseSemVer(pkg.version);
+
+              let isNewer = false;
+              for (let i = 0; i < Math.max(vRemote.length, vLocal.length); i++) {
+                const numR = vRemote[i] || 0;
+                const numL = vLocal[i] || 0;
+                if (numR > numL) { isNewer = true; break; }
+                if (numR < numL) { isNewer = false; break; }
+              }
+
               if (isNewer && data.link) {
                 setUpdateUrl(data.link);
               }
