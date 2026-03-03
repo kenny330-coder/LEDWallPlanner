@@ -87,12 +87,11 @@ const DashboardContent: React.FC = () => {
   useEffect(() => {
     // -------------------------------------------------------------
     // AUTOMATIC UPDATE CHECKER
-    // 1. Upload a simple "version.json" file to a public URL (like GitHub Gist or Amazon S3)
-    // 2. The JSON should be formatted exactly like this:
-    //    { "version": "1.0.8", "link": "https://your-public-onedrive-or-box-link" }
-    // 3. Paste the RAW url to that json file below (replace the placeholder):
+    // 1. We check the raw version.json file directly from your GitHub repository's main branch.
+    // 2. When you want to trigger an update notification, just adjust the version inside 
+    //    your local `version.json`, along with the new OneDrive/Box link, and push it to GitHub!
     // -------------------------------------------------------------
-    const UPDATE_CHECK_URL = 'https://paste-your-raw-json-url-here.com/version.json';
+    const UPDATE_CHECK_URL = 'https://raw.githubusercontent.com/kenny330-coder/LEDWallPlanner/main/version.json';
 
     fetch(UPDATE_CHECK_URL, { cache: 'no-store' }) // prevent returning cached old versions
       .then(res => res.json())
