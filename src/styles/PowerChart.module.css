@@ -1,0 +1,32 @@
+.chartContainer {
+    width: 100%;
+    height: 16rem;
+    composes: glass-panel from global;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+}
+
+.chartTitle {
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+/* Smooth transition for path d attribute changes */
+.chartContainer :global(.recharts-line-curve) {
+    transition: d 0.3s ease-in-out;
+    filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.5));
+}
+
+/* Make grid lines subtle */
+.chartContainer :global(.recharts-cartesian-grid-horizontal line),
+.chartContainer :global(.recharts-cartesian-grid-vertical line) {
+    stroke: var(--glass-border);
+}
+
+.chartContainer :global(.recharts-text) {
+    fill: var(--text-secondary);
+    font-size: 10px;
+}
