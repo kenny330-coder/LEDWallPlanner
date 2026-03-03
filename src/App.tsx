@@ -91,23 +91,34 @@ const DashboardContent: React.FC = () => {
     // 2. When you want to trigger an update notification, just adjust the version inside 
     //    your local `version.json`, along with the new OneDrive/Box link, and push it to GitHub!
     // -------------------------------------------------------------
-    const UPDATE_CHECK_URL = 'https://raw.githubusercontent.com/kenny330-coder/LEDWallPlanner/main/version.json';
+    // Delay this check by 3 seconds so it doesn't affect initial load performance
+    const timer = setTimeout(() => {
+      // Add a timestamp query param to completely bust raw.githubusercontent's 5-minute cache
+      const UPDATE_CHECK_URL = `https://raw.githubusercontent.com/kenny330-coder/LEDWallPlanner/main/version.json?t=${Date.now()}`;
 
-    fetch(UPDATE_CHECK_URL, { cache: 'no-store' }) // prevent returning cached old versions
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.version && data.version !== pkg.version) {
-          // Compare versions safely (e.g. 1.0.8 > 1.0.7)
-          const isNewer = data.version.localeCompare(pkg.version, undefined, { numeric: true, sensitivity: 'base' }) > 0;
-          if (isNewer && data.link) {
-            setUpdateUrl(data.link);
+      // Setup an abort controller to kill the fetch if it hangs for more than 5 seconds
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      fetch(UPDATE_CHECK_URL, { cache: 'no-store', signal: controller.signal }) // prevent returning cached old versions
+        .then(res => res.json())
+        .then(data => {
+          clearTimeout(timeoutId);
+          if (data && data.version && data.version !== pkg.version) {
+            // Compare versions safely (e.g. 1.0.8 > 1.0.7)
+            const isNewer = data.version.localeCompare(pkg.version, undefined, { numeric: true, sensitivity: 'base' }) > 0;
+            if (isNewer && data.link) {
+              setUpdateUrl(data.link);
+            }
           }
-        }
-      })
-      .catch((e) => {
-        // Silently fail if offline or url not configured
-        console.log('Update check failed or skipped:', e);
-      });
+        })
+        .catch((e) => {
+          // Silently fail if offline, timed out, or url not configured
+          console.log('Update check failed or skipped:', e);
+        });
+    }, 3000);
+
+    return () => clearTimeout(timer);
   }, []);
 
   const handleSelectPanel = (panel: PanelSpec) => {

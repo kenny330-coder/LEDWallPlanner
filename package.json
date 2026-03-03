@@ -1,7 +1,7 @@
 {
   "name": "LEDPowerPlanner",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.7",
   "description": "LED wall configuration and power estimation utility",
   "author": "KennethChiara",
   "main": "dist-electron/main.js",
@@ -12,8 +12,8 @@
     "preview": "vite preview",
     "electron": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "electron:build": "node build/syncVersion.js && tsc -p electron/tsconfig.json && vite build && electron-builder",
-    "electron:build:mac": "node build/syncVersion.js && xattr -cr . && tsc -p electron/tsconfig.json && vite build && electron-builder --mac && mkdir -p release && cp /tmp/led-release/*.dmg release/ 2>/dev/null || true",
-    "electron:build:win": "node build/syncVersion.js && tsc -p electron/tsconfig.json && vite build && electron-builder --win --x64 && mkdir -p release && cp /tmp/led-release/*.exe release/ 2>/dev/null || true"
+    "electron:build:mac": "node build/syncVersion.js && rm -rf /tmp/led-release/*.dmg release/*.dmg && xattr -cr . && tsc -p electron/tsconfig.json && vite build && electron-builder --mac && mkdir -p release && cp /tmp/led-release/*.dmg release/ 2>/dev/null || true",
+    "electron:build:win": "node build/syncVersion.js && rm -rf /tmp/led-release/*.exe release/*.exe && tsc -p electron/tsconfig.json && vite build && electron-builder --win --x64 && mkdir -p release && cp /tmp/led-release/*.exe release/ 2>/dev/null || true"
   },
   "build": {
     "appId": "com.ledplanner.app",
