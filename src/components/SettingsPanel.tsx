@@ -64,6 +64,87 @@ const InchesInput: React.FC<{
     );
 };
 
+const FeetDimensionInput: React.FC<{
+    valuePanels: number;
+    panelMm: number;
+    onChangePanels: (panels: number) => void;
+    label: string;
+}> = ({ valuePanels, panelMm, onChangePanels, label }) => {
+    const [localVal, setLocalVal] = useState<string>('');
+    const [isFocused, setIsFocused] = useState(false);
+
+    useEffect(() => {
+        if (!isFocused) {
+            const ft = (valuePanels * panelMm) / 304.8;
+            setLocalVal(ft > 0 ? ft.toFixed(2).replace(/\.?0+$/, '') : '');
+        }
+    }, [valuePanels, panelMm, isFocused]);
+
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setLocalVal(e.target.value);
+    };
+
+    const commitChange = () => {
+        const val = parseFloat(localVal);
+        if (!isNaN(val) && val > 0 && panelMm > 0) {
+            // calculate the maximum number of panels that fit without exceeding the feet
+            let panels = Math.floor((val * 304.8) / panelMm);
+            panels = Math.max(1, panels);
+            onChangePanels(panels);
+            // After calculating the nearest panel count, immediately snap the text
+            // value to display exactly how large that panel array is in feet
+            const actualFt = (panels * panelMm) / 304.8;
+            setLocalVal(actualFt.toFixed(2).replace(/\.?0+$/, ''));
+        } else if (localVal === '') {
+            onChangePanels(1);
+        }
+    };
+
+    const handleBlur = () => {
+        setIsFocused(false);
+        commitChange();
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            (e.target as HTMLInputElement).blur();
+        }
+    };
+
+    return (
+        <div className={styles.inputGroup} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <label className={styles.inputLabel} style={{ marginBottom: '0.25rem' }}>{label}</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <button
+                    onClick={() => onChangePanels(Math.max(1, valuePanels - 1))}
+                    className={styles.input}
+                    style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer', flexShrink: 0 }}
+                >-</button>
+                <input
+                    type="text"
+                    inputMode="decimal"
+                    value={localVal}
+                    onChange={handleChange}
+                    onFocus={() => setIsFocused(true)}
+                    onBlur={handleBlur}
+                    onKeyDown={handleKeyDown}
+                    className={styles.input}
+                    style={{ textAlign: 'center', width: '100%' }}
+                    title={`Target size in feet. Max full panels that fit without going over.`}
+                />
+                <button
+                    onClick={() => onChangePanels(valuePanels + 1)}
+                    className={styles.input}
+                    style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer', flexShrink: 0 }}
+                >+</button>
+            </div>
+            <div style={{ textAlign: 'center', fontSize: '0.65rem', color: 'var(--accent-blue)', marginTop: '0.35rem', fontWeight: 600 }}>
+                {valuePanels} {valuePanels === 1 ? 'panel' : 'panels'}
+            </div>
+        </div>
+    );
+};
+
 interface DropdownOption {
     value: number;
     label: string;
@@ -250,6 +331,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [isVoltageOpen, setIsVoltageOpen] = useState(false);
     const [isBreakerOpen, setIsBreakerOpen] = useState(false);
+    const [dimUnit, setDimUnit] = useState<'panels' | 'ft'>('panels');
 
     useEffect(() => {
         const lastId = localStorage.getItem('lastSelectedPanelId');
@@ -384,94 +466,122 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
 
             {/* Screen Dimensions */}
             <div className={styles.section}>
-                <label className={styles.label}>Dimensions</label>
-                <div className={styles.row}>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Width (Panels)</label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                            <button
-                                onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: Math.max(1, state.screenCols - 1), rows: state.screenRows } })}
-                                className={styles.input}
-                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                            >-</button>
-                            <input
-                                type="number"
-                                min="1"
-                                value={state.screenCols}
-                                onChange={(e) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: Number(e.target.value), rows: state.screenRows } })}
-                                className={styles.input}
-                                style={{ textAlign: 'center' }}
-                            />
-                            <button
-                                onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols + 1, rows: state.screenRows } })}
-                                className={styles.input}
-                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                            >+</button>
-                        </div>
-                    </div>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Height (Panels)</label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                            <button
-                                onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: Math.max(1, state.screenRows - 1) } })}
-                                className={styles.input}
-                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                            >-</button>
-                            <input
-                                type="number"
-                                min="1"
-                                value={state.screenRows}
-                                onChange={(e) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: Number(e.target.value) } })}
-                                className={styles.input}
-                                style={{ textAlign: 'center' }}
-                            />
-                            <button
-                                onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: state.screenRows + 1 } })}
-                                className={styles.input}
-                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                            >+</button>
-                        </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <label className={styles.label} style={{ marginBottom: 0 }}>Dimensions</label>
+                    <div style={{ display: 'flex', background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '999px', padding: '2px' }}>
+                        <button
+                            onClick={() => setDimUnit('panels')}
+                            style={{
+                                padding: '2px 8px', borderRadius: '999px', border: 'none',
+                                background: dimUnit === 'panels' ? 'var(--accent-blue)' : 'transparent',
+                                color: dimUnit === 'panels' ? '#fff' : 'var(--text-secondary)',
+                                fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', outline: 'none'
+                            }}
+                        >Panels</button>
+                        <button
+                            onClick={() => setDimUnit('ft')}
+                            style={{
+                                padding: '2px 8px', borderRadius: '999px', border: 'none',
+                                background: dimUnit === 'ft' ? 'var(--accent-blue)' : 'transparent',
+                                color: dimUnit === 'ft' ? '#fff' : 'var(--text-secondary)',
+                                fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', outline: 'none'
+                            }}
+                        >Feet</button>
                     </div>
                 </div>
+
                 <div className={styles.row}>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Panel W (mm)</label>
-                        <input
-                            type="number"
-                            value={state.panelWidthMm}
-                            onChange={(e) => dispatch({ type: 'SET_PANEL_DIMS', payload: { w: Number(e.target.value), h: state.panelHeightMm } })}
-                            className={styles.input}
-                        />
-                    </div>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Panel H (mm)</label>
-                        <input
-                            type="number"
-                            value={state.panelHeightMm}
-                            onChange={(e) => dispatch({ type: 'SET_PANEL_DIMS', payload: { w: state.panelWidthMm, h: Number(e.target.value) } })}
-                            className={styles.input}
-                        />
-                    </div>
+                    {dimUnit === 'panels' ? (
+                        <>
+                            <div className={styles.inputGroup}>
+                                <label className={styles.inputLabel}>Width (Panels)</label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <button
+                                        onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: Math.max(1, state.screenCols - 1), rows: state.screenRows } })}
+                                        className={styles.input}
+                                        style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                                    >-</button>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={state.screenCols}
+                                        onChange={(e) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: Number(e.target.value), rows: state.screenRows } })}
+                                        className={styles.input}
+                                        style={{ textAlign: 'center' }}
+                                    />
+                                    <button
+                                        onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols + 1, rows: state.screenRows } })}
+                                        className={styles.input}
+                                        style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                                    >+</button>
+                                </div>
+                            </div>
+                            <div className={styles.inputGroup}>
+                                <label className={styles.inputLabel}>Height (Panels)</label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <button
+                                        onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: Math.max(1, state.screenRows - 1) } })}
+                                        className={styles.input}
+                                        style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                                    >-</button>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={state.screenRows}
+                                        onChange={(e) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: Number(e.target.value) } })}
+                                        className={styles.input}
+                                        style={{ textAlign: 'center' }}
+                                    />
+                                    <button
+                                        onClick={() => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows: state.screenRows + 1 } })}
+                                        className={styles.input}
+                                        style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                                    >+</button>
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <FeetDimensionInput
+                                label="Max Fit W (ft)"
+                                valuePanels={state.screenCols}
+                                panelMm={state.panelWidthMm}
+                                onChangePanels={(cols) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols, rows: state.screenRows } })}
+                            />
+                            <FeetDimensionInput
+                                label="Max Fit H (ft)"
+                                valuePanels={state.screenRows}
+                                panelMm={state.panelHeightMm}
+                                onChangePanels={(rows) => dispatch({ type: 'SET_SCREEN_DIMS', payload: { cols: state.screenCols, rows } })}
+                            />
+                        </>
+                    )}
                 </div>
-                <div className={styles.row}>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Panel Weight (kg)</label>
-                        <input
-                            type="number"
-                            value={state.panelWeightKg || 12}
-                            onChange={(e) => dispatch({ type: 'SET_PANEL_WEIGHT', payload: Number(e.target.value) })}
-                            className={styles.input}
-                        />
+                <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'var(--glass-highlight)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border-t)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', fontWeight: 600 }}>Active Panel Specification</span>
                     </div>
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Ground Stack (mm)</label>
-                        <input
-                            type="number"
-                            min="0"
-                            value={state.groundStackHeightMm || 0}
-                            onChange={(e) => dispatch({ type: 'SET_GROUND_STACK', payload: Number(e.target.value) })}
-                            className={styles.input}
-                        />
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                        <div>
+                            <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginBottom: '0.15rem' }}>Dimensions</div>
+                            <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                {state.panelWidthMm} × {state.panelHeightMm} <span style={{ color: 'var(--text-tertiary)', fontSize: '0.75rem' }}>mm</span>
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', marginTop: '0.1rem' }}>
+                                {(state.panelWidthMm / 25.4).toFixed(1)} × {(state.panelHeightMm / 25.4).toFixed(1)} <span style={{ opacity: 0.7 }}>in</span>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginBottom: '0.15rem' }}>Weight & Base</div>
+                            <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                {state.panelWeightKg} <span style={{ color: 'var(--text-tertiary)', fontSize: '0.75rem' }}>kg</span>
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--accent-blue)', marginTop: '0.1rem' }}>
+                                {(state.panelWeightKg * 2.20462).toFixed(1)} <span style={{ opacity: 0.7 }}>lbs</span> | Base: {(state.groundStackHeightMm || 0)}mm
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

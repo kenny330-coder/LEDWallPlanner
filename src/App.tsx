@@ -220,21 +220,42 @@ const DashboardContent: React.FC = () => {
 
       <main className={styles.main}>
         <header className={styles.header}>
-          {/* Left: editable project name */}
-          <div className={styles.projectNameWrap}>
-            <span className={styles.projectNameLabel}>Project Name</span>
-            <input
-              className={styles.projectNameInput}
-              value={state.projectName ?? 'Untitled Project'}
-              onChange={(e) => dispatch({ type: 'SET_PROJECT_NAME', payload: e.target.value })}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              placeholder="Untitled Project"
-              aria-label="Project name"
-              title="Click to rename project"
-            />
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <div className={styles.projectNameWrap}>
+              <span className={styles.projectNameLabel}>Project Name</span>
+              <input
+                className={styles.projectNameInput}
+                value={state.projectName ?? 'Untitled Project'}
+                onChange={(e) => dispatch({ type: 'SET_PROJECT_NAME', payload: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                placeholder="Untitled Project"
+                aria-label="Project name"
+                title="Click to rename project"
+              />
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            {updateUrl && (
+              <button
+                onClick={() => window.open(updateUrl, '_blank')}
+                className={`${styles.exportBtn} update-badge`}
+                title="A new version of LED Power Planner is available!"
+                style={{
+                  borderRadius: '999px',
+                  padding: '0.45rem 0.85rem',
+                  background: 'var(--accent-green)',
+                  color: '#ffffff',
+                  border: 'none',
+                  gap: '0.35rem',
+                  fontWeight: '600',
+                  fontSize: '0.8rem',
+                }}
+              >
+                <Download size={14} /> Update Available
+              </button>
+            )}
+
             {/* Project file actions — grouped in a pill container */}
             <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', padding: '0.2rem', background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '999px', backdropFilter: 'blur(12px)' }}>
               <button onClick={handleSaveConfig} className={styles.exportBtn} title="Save project as JSON file" style={{ borderRadius: '999px', padding: '0.4rem 0.85rem', gap: '0.4rem', fontSize: '0.8rem' }}>
@@ -247,27 +268,6 @@ const DashboardContent: React.FC = () => {
             </div>
 
             {/* Utility icon buttons */}
-            {updateUrl && (
-              <button
-                onClick={() => window.open(updateUrl, '_blank')}
-                className={styles.exportBtn}
-                title="A new version of LED Power Planner is available!"
-                style={{
-                  borderRadius: '999px',
-                  padding: '0.45rem 0.85rem',
-                  background: 'var(--accent-green)',
-                  color: '#ffffff',
-                  border: 'none',
-                  boxShadow: '0 2px 12px var(--glow-green)',
-                  gap: '0.35rem',
-                  fontWeight: '600',
-                  fontSize: '0.8rem',
-                  marginRight: '0.35rem'
-                }}
-              >
-                <Download size={14} /> New Update Available
-              </button>
-            )}
             <button onClick={() => setIsLibraryOpen(true)} className={styles.exportBtn} title="Panel Library" style={{ borderRadius: '999px', padding: '0.45rem 0.7rem' }}>
               <SettingsIcon size={16} />
             </button>
