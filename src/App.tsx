@@ -100,22 +100,42 @@ const DashboardContent: React.FC = () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      fetch(UPDATE_CHECK_URL, { cache: 'no-store', signal: controller.signal }) // prevent returning cached old versions
-        .then(res => res.json())
-        .then(data => {
-          clearTimeout(timeoutId);
-          if (data && data.version && data.version !== pkg.version) {
-            // Compare versions safely (e.g. 1.0.8 > 1.0.7)
-            const isNewer = data.version.localeCompare(pkg.version, undefined, { numeric: true, sensitivity: 'base' }) > 0;
-            if (isNewer && data.link) {
-              setUpdateUrl(data.link);
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', UPDATE_CHECK_URL, true);
+      // Aggressive set of headers specifically to force raw.githubusercontent to completely dump its Edge Cache
+      xhr.setRequestHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      xhr.setRequestHeader('Pragma', 'no-cache');
+      xhr.setRequestHeader('Expires', '0');
+
+      xhr.onload = function () {
+        clearTimeout(timeoutId);
+        if (xhr.status === 200) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (data && data.version && data.version !== pkg.version) {
+              // Compare versions safely (e.g. 1.0.8 > 1.0.7)
+              const isNewer = data.version.localeCompare(pkg.version, undefined, { numeric: true, sensitivity: 'base' }) > 0;
+              if (isNewer && data.link) {
+                setUpdateUrl(data.link);
+              }
             }
+          } catch (e) {
+            console.log('Update JSON parsing failed:', e);
           }
-        })
-        .catch((e) => {
-          // Silently fail if offline, timed out, or url not configured
-          console.log('Update check failed or skipped:', e);
-        });
+        }
+      };
+
+      xhr.onerror = function () {
+        clearTimeout(timeoutId);
+        console.log('Update check failed or offline.');
+      };
+
+      // Set timeout abort
+      controller.signal.addEventListener('abort', () => {
+        xhr.abort();
+      });
+
+      xhr.send();
     }, 3000);
 
     return () => clearTimeout(timer);
