@@ -152,7 +152,7 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
         body: powerSpecs,
         theme: 'striped',
         headStyles: { fillColor: [66, 66, 66] },
-        styles: { fontSize: 10 },
+        styles: { fontSize: 10, overflow: 'linebreak' },
         margin: { right: pageWidth - 100 }, // Width constraint
         // Highlight Brightness Row
         didParseCell: (data) => {
@@ -205,12 +205,87 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
         columnStyles: { 0: { halign: 'left' } } // ID left aligned
     });
 
+    // --- Power Distribution Section ---
+    cursorY = (doc as any).lastAutoTable.finalY + 12;
+
+    if (state.distroConfig) {
+        const distroLookup: Record<string, { label: string; inC: string; outC: string }> = {
+            'soca-breakout':  { label: 'Socapex Breakout (6-way)', inC: 'Socapex 19-pin', outC: 'Pigtail' },
+            'lex-lunchbox':   { label: 'Lex LSC Lunch Box', inC: 'Socapex 19-pin', outC: 'L6-20 Twist-Lock' },
+            'cam-l620-6':     { label: 'Cam Lock Distro (6-way L6-20)', inC: 'Cam Lock 200A', outC: 'L6-20 Twist-Lock' },
+            'cam-l620-12':    { label: 'Cam Lock Distro (12-way L6-20)', inC: 'Cam Lock 400A', outC: 'L6-20 Twist-Lock' },
+            'cam-soca-4':     { label: 'Cam Lock → 4× Socapex', inC: 'Cam Lock 400A', outC: 'Socapex 19-pin' },
+            'l630-breakout':  { label: 'L6-30 Breakout (3-way L6-20)', inC: 'L6-30 Twist-Lock', outC: 'L6-20 Twist-Lock' },
+            'powercon-ring':  { label: 'Neutrik PowerCON Ring/Daisy', inC: 'PowerCON True1', outC: 'PowerCON True1' },
+            'cee32-l620':     { label: 'CEE 32A → L6-20 (6-way)', inC: 'CEE 32A / IEC 309', outC: 'L6-20 Twist-Lock' },
+            'custom':         { label: 'Custom Distro', inC: 'Custom', outC: 'Custom' },
+        };
+        const dSpec = distroLookup[state.distroConfig.type] ?? distroLookup['custom'];
+        const cpd = state.distroConfig.circuitsPerDistro;
+        const effectiveCircuits = (state.powerConfig?.circuits?.length ?? 0) > 0
+            ? state.powerConfig!.circuits.length
+            : circuitsNeeded;
+        const distroCount = Math.ceil(effectiveCircuits / cpd);
+
+        if (cursorY + 40 > pageHeightPt - 15) { doc.addPage(); cursorY = 20; }
+
+        doc.setFontSize(12);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0);
+        doc.text('POWER DISTRIBUTION', margin, cursorY);
+        cursorY += 6;
+
+        const distroSummary: string[][] = [
+            ['Distro Type', dSpec.label],
+            ['Input Connector', dSpec.inC],
+            ['Output Connector', dSpec.outC],
+            ['Circuits per Unit', `${cpd}`],
+            ['Distro Units Required', `${distroCount}`],
+            ['Total Circuits', `${effectiveCircuits}`],
+        ];
+        autoTable(doc, {
+            startY: cursorY,
+            body: distroSummary,
+            theme: 'plain',
+            margin: { left: margin, right: pageWidth / 2 + 5 },
+            styles: { fontSize: 9, cellPadding: 1, overflow: 'linebreak' },
+            columnStyles: { 0: { fontStyle: 'bold', cellWidth: 45 } }
+        });
+        const summaryFinalY = (doc as any).lastAutoTable.finalY;
+
+        // Distro unit assignment table
+        const distroRows: string[][] = [];
+        for (let d = 0; d < distroCount; d++) {
+            const slotStart = d * cpd;
+            const slotEnd = Math.min(slotStart + cpd, effectiveCircuits);
+            const circuitList = Array.from({ length: slotEnd - slotStart }, (_, i) => `C${slotStart + i + 1}`).join(', ');
+            const hasCustom = (state.powerConfig?.circuits?.length ?? 0) > 0;
+            let ampsStr = '';
+            if (hasCustom) {
+                const totalAmpsD = state.powerConfig!.circuits
+                    .slice(slotStart, slotEnd)
+                    .reduce((sum, c) => sum + (c.panelIds.length * wattsPerPanel) / state.voltage, 0);
+                ampsStr = `${totalAmpsD.toFixed(1)} A`;
+            }
+            distroRows.push([`Distro ${d + 1}`, circuitList, ampsStr || '—']);
+        }
+        autoTable(doc, {
+            startY: cursorY,
+            head: [['Unit', 'Circuits Fed', 'Total Load (A)']],
+            body: distroRows,
+            theme: 'grid',
+            headStyles: { fillColor: [100, 60, 10] },
+            margin: { left: pageWidth / 2, right: margin },
+            styles: { fontSize: 9, overflow: 'linebreak' },
+        });
+
+        cursorY = Math.max((doc as any).lastAutoTable.finalY, summaryFinalY) + 12;
+    }
+
     // --- Visual Circuit Map (Miniature) ---
     // Draw a small representation of the wall on the right of the power table, or below if no space
     // Let's put it on a new page if needed, or keeping one page is better. 
     // We have space on the right of the first power table? Maybe. Let's put it at the bottom.
-
-    cursorY = (doc as any).lastAutoTable.finalY + 12;
 
     // Page break: map needs ~80px (60 draw + legend + label)
     if (cursorY + 80 > pageHeightPt - 15) {
@@ -221,7 +296,9 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0);
-    doc.text("CIRCUIT PATCHING MAP (Horizontal Snake Estimate)", margin, cursorY);
+    const hasCustomPower = (state.powerConfig?.circuits?.length ?? 0) > 0;
+    
+    doc.text(hasCustomPower ? "CIRCUIT PATCHING MAP (Custom Config)" : "CIRCUIT PATCHING MAP (Horizontal Snake Estimate)", margin, cursorY);
     cursorY += 8;
     doc.setFont('helvetica', 'normal');
 
@@ -241,46 +318,61 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     doc.rect(startX, startY, drawW, drawH);
 
     // Render Circuits
-    const colors = [[33, 150, 243], [76, 175, 80], [255, 152, 0], [156, 39, 176], [233, 30, 99], [96, 125, 139]]; // Blue, Green, Orange, Purple, Pink, Grey
+    const fallbackColors = [[33, 150, 243], [76, 175, 80], [255, 152, 0], [156, 39, 176], [233, 30, 99], [96, 125, 139]];
 
     const pw = state.panelWidthMm * scale;
     const ph = state.panelHeightMm * scale;
 
-    // 1. Simulate Flow to assign Circuits
-    // Horizontal Snake: Row 0 L->R, Row 1 R->L, etc.
-    const panelCircuitMap = new Map<string, number>();
-    let simPanelCount = 0;
+    const panelCircuitMap = new Map<string, { idx: number, color: [number, number, number] }>();
+    
+    let totalCircuitsUsed = 0;
 
-    for (let r = 0; r < state.screenRows; r++) {
-        const isLeftToRight = (r % 2 === 0);
+    if (hasCustomPower) {
+        const activeCircuits = state.powerConfig!.circuits;
+        totalCircuitsUsed = activeCircuits.length;
 
-        // Loop cols in correct direction
-        const cols = [];
-        if (isLeftToRight) {
-            for (let c = 0; c < state.screenCols; c++) cols.push(c);
-        } else {
-            for (let c = state.screenCols - 1; c >= 0; c--) cols.push(c);
+        const hexToRgb = (hex: string): [number, number, number] => {
+            const h = hex.replace('#', '');
+            return [parseInt(h.substring(0,2), 16), parseInt(h.substring(2,4), 16), parseInt(h.substring(4,6), 16)];
+        };
+
+        for (let i = 0; i < activeCircuits.length; i++) {
+            const circuit = activeCircuits[i];
+            for (const pid of circuit.panelIds) {
+                const [r, c] = pid.split('-');
+                panelCircuitMap.set(`${r},${c}`, { idx: i, color: hexToRgb(circuit.color) });
+            }
         }
+    } else {
+        totalCircuitsUsed = circuitsNeeded;
+        let simPanelCount = 0;
+        for (let r = 0; r < state.screenRows; r++) {
+            const isLeftToRight = (r % 2 === 0);
+            const cols = [];
+            if (isLeftToRight) {
+                for (let c = 0; c < state.screenCols; c++) cols.push(c);
+            } else {
+                for (let c = state.screenCols - 1; c >= 0; c--) cols.push(c);
+            }
 
-        for (const c of cols) {
-            const circuitIdx = Math.floor(simPanelCount / saferMaxPanelsPerCircuit);
-            panelCircuitMap.set(`${r},${c}`, circuitIdx);
-            simPanelCount++;
+            for (const c of cols) {
+                const circuitIdx = Math.floor(simPanelCount / saferMaxPanelsPerCircuit);
+                const color = fallbackColors[circuitIdx % fallbackColors.length] as [number, number, number];
+                panelCircuitMap.set(`${r},${c}`, { idx: circuitIdx, color });
+                simPanelCount++;
+            }
         }
     }
 
-    // 2. Draw Grid based on Assignments
+    // Draw Grid based on Assignments
     for (let r = 0; r < state.screenRows; r++) {
         for (let c = 0; c < state.screenCols; c++) {
             const px = startX + (c * pw);
             const py = startY + (r * ph);
 
-            const cIdx = panelCircuitMap.get(`${r},${c}`);
-            if (cIdx !== undefined) {
-                const color = colors[cIdx % colors.length];
-                const rgb = color as [number, number, number];
-
-                doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+            const pData = panelCircuitMap.get(`${r},${c}`);
+            if (pData) {
+                doc.setFillColor(pData.color[0], pData.color[1], pData.color[2]);
                 doc.setDrawColor(255);
                 doc.setLineWidth(0.2);
                 doc.rect(px, py, pw, ph, 'FD');
@@ -291,13 +383,23 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     // Legend
     doc.setFontSize(8);
     doc.setTextColor(0);
-    const legendY = startY + drawH + 5;
+    let legendY = startY + drawH + 5;
     let legendX = startX;
 
-    for (let i = 0; i < circuitsNeeded; i++) {
-        const colIdx = i % colors.length;
-        const c = colors[colIdx];
-        doc.setFillColor(c[0], c[1], c[2]);
+    for (let i = 0; i < totalCircuitsUsed; i++) {
+        if (legendX + 15 > pageWidth - margin) {
+            legendX = startX;
+            legendY += 6;
+        }
+        let col: [number, number, number];
+        if (hasCustomPower) {
+            const activeCircuits = state.powerConfig!.circuits;
+            const h = activeCircuits[i].color.replace('#', '');
+            col = [parseInt(h.substring(0,2), 16), parseInt(h.substring(2,4), 16), parseInt(h.substring(4,6), 16)];
+        } else {
+            col = fallbackColors[i % fallbackColors.length] as [number, number, number];
+        }
+        doc.setFillColor(col[0], col[1], col[2]);
         doc.rect(legendX, legendY, 4, 4, 'F');
         doc.text(`C${i + 1}`, legendX + 5, legendY + 3);
         legendX += 13; // compacted spacing
@@ -311,17 +413,26 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     doc.text("DATA SIGNAL PATH & PROCESSING", margin, cursorY);
     cursorY += 10;
 
+    const hasCustomData = (state.dataConfig?.ports?.length ?? 0) > 0 && state.dataConfig!.ports.some(p => p.panelIds.length > 0);
+
     // Instructions / Logic Note
     doc.setFontSize(10);
     doc.setTextColor(80);
-    doc.text("Estimated Signal Flow based on 650,000 pixels per port capacity (Brompton/Novastar).", margin, cursorY);
-    cursorY += 6;
-    doc.text("Pattern: Hybrid (Raster default, Snakes when maintaining signal chain).", margin, cursorY);
-    cursorY += 12;
+    if (hasCustomData) {
+        doc.text("Actual Signal Flow based on custom routing assignments.", margin, cursorY);
+        cursorY += 6;
+        doc.text("Pattern: Custom User Configuration.", margin, cursorY);
+        cursorY += 12;
+    } else {
+        doc.text("Estimated Signal Flow based on 650,000 pixels per port capacity (Brompton/Novastar).", margin, cursorY);
+        cursorY += 6;
+        doc.text("Pattern: Hybrid (Raster default, Snakes when maintaining signal chain).", margin, cursorY);
+        cursorY += 12;
+    }
 
     doc.setFontSize(12);
     doc.setTextColor(0);
-    doc.text("DATA PORT MAPPING", margin, cursorY);
+    doc.text(hasCustomData ? "DATA PORT MAPPING (Custom Config)" : "DATA PORT MAPPING (Estimated)", margin, cursorY);
     cursorY += 8;
 
     // Draw Map 2
@@ -336,59 +447,78 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     const maxPanelsPerPort = Math.floor(650000 / pixelsPerPanel);
     const dataColors = [[0, 150, 136], [76, 175, 80], [139, 195, 74], [205, 220, 57], [0, 188, 212], [33, 150, 243]]; // Teals/Greens
 
-    const panelPortMap = new Map<string, number>();
+    const panelPortMap = new Map<string, { idx: number, color: [number, number, number] }>();
+    let totalPorts = 0;
 
-    let nextPortIdx = 0;
-    const numFullSegments = Math.floor(state.screenCols / maxPanelsPerPort);
-    const fullCols = numFullSegments * maxPanelsPerPort;
+    const hexToRgb = (hex: string): [number, number, number] => {
+        const h = hex.replace('#', '');
+        return [parseInt(h.substring(0,2), 16), parseInt(h.substring(2,4), 16), parseInt(h.substring(4,6), 16)];
+    };
 
-    // 1. Process "Full Chains" - Left side of the screen
-    for (let r = 0; r < state.screenRows; r++) {
-        for (let s = 0; s < numFullSegments; s++) {
-            const startCol = s * maxPanelsPerPort;
-            for (let i = 0; i < maxPanelsPerPort; i++) {
-                panelPortMap.set(`${r},${startCol + i}`, nextPortIdx);
+    if (hasCustomData) {
+        const activePorts = state.dataConfig!.ports.filter(p => p.panelIds.length > 0);
+        totalPorts = activePorts.length;
+        for (let i = 0; i < activePorts.length; i++) {
+            const port = activePorts[i];
+            for (const pid of port.panelIds) {
+                const [r, c] = pid.split('-');
+                panelPortMap.set(`${r},${c}`, { idx: i, color: hexToRgb(port.color) });
             }
-            nextPortIdx++;
         }
-    }
+    } else {
+        let nextPortIdx = 0;
+        const numFullSegments = Math.floor(state.screenCols / maxPanelsPerPort);
+        const fullCols = numFullSegments * maxPanelsPerPort;
 
-    // 2. Process "Remainder" - Right side of the screen using a snake pattern
-    const remWidth = state.screenCols - fullCols;
-    if (remWidth > 0) {
-        const remainderCells: { r: number, c: number }[] = [];
+        // 1. Process "Full Chains" - Left side of the screen
         for (let r = 0; r < state.screenRows; r++) {
-            const isRowSnakeRight = (r % 2 === 0);
-            if (isRowSnakeRight) {
-                // Left to Right within the remainder columns
-                for (let c = fullCols; c < state.screenCols; c++) {
-                    remainderCells.push({ r, c });
+            for (let s = 0; s < numFullSegments; s++) {
+                const startCol = s * maxPanelsPerPort;
+                const color = dataColors[nextPortIdx % dataColors.length] as [number, number, number];
+                for (let i = 0; i < maxPanelsPerPort; i++) {
+                    panelPortMap.set(`${r},${startCol + i}`, { idx: nextPortIdx, color });
                 }
-            } else {
-                // Right to Left within the remainder columns
-                for (let c = state.screenCols - 1; c >= fullCols; c--) {
-                    remainderCells.push({ r, c });
-                }
-            }
-        }
-
-        // Assign remainder cells to ports
-        let panelsInCurrentRemPort = 0;
-        for (const cell of remainderCells) {
-            panelPortMap.set(`${cell.r},${cell.c}`, nextPortIdx);
-            panelsInCurrentRemPort++;
-            if (panelsInCurrentRemPort >= maxPanelsPerPort) {
                 nextPortIdx++;
-                panelsInCurrentRemPort = 0;
             }
         }
-        // If we finished with a partially filled port, increment for the next (if any)
-        if (panelsInCurrentRemPort > 0) {
-            nextPortIdx++;
-        }
-    }
 
-    const totalPorts = nextPortIdx;
+        // 2. Process "Remainder" - Right side of the screen using a snake pattern
+        const remWidth = state.screenCols - fullCols;
+        if (remWidth > 0) {
+            const remainderCells: { r: number, c: number }[] = [];
+            for (let r = 0; r < state.screenRows; r++) {
+                const isRowSnakeRight = (r % 2 === 0);
+                if (isRowSnakeRight) {
+                    // Left to Right within the remainder columns
+                    for (let c = fullCols; c < state.screenCols; c++) {
+                        remainderCells.push({ r, c });
+                    }
+                } else {
+                    // Right to Left within the remainder columns
+                    for (let c = state.screenCols - 1; c >= fullCols; c--) {
+                        remainderCells.push({ r, c });
+                    }
+                }
+            }
+
+            // Assign remainder cells to ports
+            let panelsInCurrentRemPort = 0;
+            for (const cell of remainderCells) {
+                const color = dataColors[nextPortIdx % dataColors.length] as [number, number, number];
+                panelPortMap.set(`${cell.r},${cell.c}`, { idx: nextPortIdx, color });
+                panelsInCurrentRemPort++;
+                if (panelsInCurrentRemPort >= maxPanelsPerPort) {
+                    nextPortIdx++;
+                    panelsInCurrentRemPort = 0;
+                }
+            }
+            // If we finished with a partially filled port, increment for the next (if any)
+            if (panelsInCurrentRemPort > 0) {
+                nextPortIdx++;
+            }
+        }
+        totalPorts = nextPortIdx;
+    }
 
     // Render Grid
     for (let r = 0; r < state.screenRows; r++) {
@@ -396,12 +526,9 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
             const px = startX + (c * pw);
             const py = startY2 + (r * ph);
 
-            const pIdx = panelPortMap.get(`${r},${c}`);
-            if (pIdx !== undefined) {
-                const color = dataColors[pIdx % dataColors.length];
-                const rgb = color as [number, number, number];
-
-                doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+            const pData = panelPortMap.get(`${r},${c}`);
+            if (pData !== undefined) {
+                doc.setFillColor(pData.color[0], pData.color[1], pData.color[2]);
                 doc.setDrawColor(255);
                 doc.setLineWidth(0.2);
                 doc.rect(px, py, pw, ph, 'FD');
@@ -410,13 +537,24 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
     }
 
     // Legend
-    const legendY2 = startY2 + drawH + 5;
+    let legendY2 = startY2 + drawH + 5;
     let legendX2 = startX;
 
     for (let i = 0; i < totalPorts; i++) {
-        const colIdx = i % dataColors.length;
-        const c = dataColors[colIdx];
-        doc.setFillColor(c[0], c[1], c[2]);
+        if (legendX2 + 20 > pageWidth - margin) {
+            legendX2 = startX;
+            legendY2 += 6;
+        }
+        
+        let col: [number, number, number];
+        if (hasCustomData) {
+            const activePorts = state.dataConfig!.ports.filter(p => p.panelIds.length > 0);
+            col = hexToRgb(activePorts[i].color);
+        } else {
+            col = dataColors[i % dataColors.length] as [number, number, number];
+        }
+        
+        doc.setFillColor(col[0], col[1], col[2]);
         doc.rect(legendX2, legendY2, 4, 4, 'F');
         doc.text(`Port ${i + 1}`, legendX2 + 5, legendY2 + 3);
         legendX2 += 20;
@@ -491,7 +629,7 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
             body: riggingRows,
             theme: 'grid',
             headStyles: { fillColor: (isSafe || rc.mode !== 'flown') ? [46, 125, 50] : [198, 40, 40] },
-            styles: { fontSize: 9, cellPadding: 2 },
+            styles: { fontSize: 9, cellPadding: 2, overflow: 'linebreak' },
             columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
             didParseCell: (data) => {
                 // Highlight safety factor row
@@ -534,36 +672,105 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
 
 
     // Calcs
-    const crewSize = 6;
-    const totalMinutes = (totalPanels * 1) + (state.screenCols * 1);
-    const buildTimeHours = totalMinutes / 60;
+    const panelHeightFt = (state.panelHeightMm || 500) / 304.8;
+    let setupMins = 45;
+    let strikeMins = 30;
+    let crewScore = 0;
+    let minCrew = 4;
+
+    const numBlanks = state.blanksCount || 0;
+    for (let b = 0; b < numBlanks; b++) {
+        const rowTopFt = (b + 1) * panelHeightFt;
+        let rowSetupTime = 1.0 * 0.66;
+        let rowStrikeTime = 0.4 * 0.66;
+        let rowCrewWeight = 1.0 * 0.66;
+
+        if (rowTopFt > 7.0) {
+            rowSetupTime = 1.5 * 0.66;
+            rowStrikeTime = 0.6 * 0.66;
+            rowCrewWeight = 2.0 * 0.66;
+            minCrew = 8;
+        }
+
+        setupMins += (rowSetupTime * state.screenCols);
+        strikeMins += (rowStrikeTime * state.screenCols);
+        crewScore += (rowCrewWeight * state.screenCols);
+    }
+
+    for (let r = 0; r < state.screenRows; r++) {
+        const rowTopFt = (numBlanks + r + 1) * panelHeightFt;
+        let rowSetupTime = 1.0;
+        let rowStrikeTime = 0.4;
+        let rowCrewWeight = 1.0;
+
+        if (rowTopFt > 7.0) {
+            rowSetupTime = 1.5;
+            rowStrikeTime = 0.6;
+            rowCrewWeight = 2.0;
+            minCrew = 8; // Demand more base crew for ladder work
+        }
+
+        setupMins += (rowSetupTime * state.screenCols);
+        strikeMins += (rowStrikeTime * state.screenCols);
+        crewScore += (rowCrewWeight * state.screenCols);
+    }
+
+    const crewSize = Math.max(minCrew, Math.round(crewScore / 45));
+    const setupHours = setupMins / 60;
+    const strikeHours = strikeMins / 60;
     const spares = Math.ceil(totalPanels * 0.05); // 5% spares
 
-    // Dynamic Power Drops
-    const maxCircuitVA = circuitsNeeded * state.circuitBreakerAmps * state.voltage;
-    // Assume 3-phase wye 208Y/120V distro for 110/120/208V, split-phase for 240V
-    const phaseDivisor = state.voltage === 240 ? 240 : 360;
-    const ampsPerLeg = Math.ceil(maxCircuitVA / phaseDivisor);
+    // Processors
+    const totalPixelsLogistics = totalPanels * (state.panelPixelsW * state.panelPixelsH);
+    const requiredPorts = Math.max(1, Math.ceil(totalPixelsLogistics / 650000));
+    const processorsNeeded = Math.ceil(requiredPorts / 20); // assuming standard 4K processor with 20 outputs
 
+    // Dynamic Power Drops
     let dropString = "";
-    if (ampsPerLeg <= 60) {
-        dropString = "1x 60A (or 100A) 3-Phase Drop";
-    } else if (ampsPerLeg <= 100) {
-        dropString = "1x 100A 3-Phase Camlok Drop";
-    } else if (ampsPerLeg <= 200) {
-        dropString = "1x 200A 3-Phase Camlok Drop";
-    } else if (ampsPerLeg <= 400) {
-        dropString = "1x 400A (or 2x 200A) 3-Phase Camlok Drops";
+    if (state.distroConfig) {
+        const cpd = state.distroConfig.circuitsPerDistro;
+        const effectiveCircuits = (state.powerConfig?.circuits?.length ?? 0) > 0 ? state.powerConfig!.circuits.length : circuitsNeeded;
+        const distroCount = Math.ceil(effectiveCircuits / cpd);
+        
+        const distroLookup: Record<string, string> = {
+            'soca-breakout': 'Socapex 19-pin',
+            'lex-lunchbox': 'Socapex 19-pin',
+            'cam-l620-6': 'Cam Lock 200A',
+            'cam-l620-12': 'Cam Lock 400A',
+            'cam-soca-4': 'Cam Lock 400A',
+            'l630-breakout': 'L6-30 Twist-Lock',
+            'powercon-ring': 'PowerCON True1',
+            'cee32-l620': 'CEE 32A / IEC 309',
+            'custom': 'Custom',
+        };
+        const inConnector = distroLookup[state.distroConfig.type] ?? 'Custom';
+        dropString = `${distroCount}x ${inConnector} Drops`;
     } else {
-        const num200 = Math.ceil(ampsPerLeg / 200);
-        dropString = `${num200}x 200A 3-Phase Camlok Drops (Distribute evenly)`;
+        const maxCircuitVA = circuitsNeeded * state.circuitBreakerAmps * state.voltage;
+        // Assume 3-phase wye 208Y/120V distro for 110/120/208V, split-phase for 240V
+        const phaseDivisor = state.voltage === 240 ? 240 : 360;
+        const ampsPerLeg = Math.ceil(maxCircuitVA / phaseDivisor);
+
+        if (ampsPerLeg <= 60) {
+            dropString = "1x 60A (or 100A) 3-Phase Drop";
+        } else if (ampsPerLeg <= 100) {
+            dropString = "1x 100A 3-Phase Camlok Drop";
+        } else if (ampsPerLeg <= 200) {
+            dropString = "1x 200A 3-Phase Camlok Drop";
+        } else if (ampsPerLeg <= 400) {
+            dropString = "1x 400A (or 2x 200A) 3-Phase Camlok Drops";
+        } else {
+            const num200 = Math.ceil(ampsPerLeg / 200);
+            dropString = `${num200}x 200A 3-Phase Camlok Drops (Distribute evenly)`;
+        }
     }
 
     const logisticsData = [
-        ["Est. Crew Size", `${crewSize} Technicians`],
-        ["Est. Build Time", `${buildTimeHours.toFixed(1)} Hours (excludes rigging and transport)`],
+        ["Rec. Crew Size", `${crewSize} Technicians`],
+        ["Est. Setup Time", `${setupHours.toFixed(1)} Hours (excludes rigging/transport)`],
+        ["Est. Strike Time", `${strikeHours.toFixed(1)} Hours (excludes transport)`],
         ["Road Cases", `${Math.ceil(totalPanels / (state.panelsPerCase || 6))} Active + ${Math.ceil(((state.blanksCount || 0) * state.screenCols) / (state.blanksPerCase || 8))} Blank + ${state.supportCasesCount || 1} Supp. Cases`],
-        ["Rec. Spares", `${spares} Panels + 1 Processor + Cables`],
+        ["Rec. Spares", `${spares} Panels + ${processorsNeeded} Primary Processor(s) + 1 Spare + Cables`],
         ["Power Drops", dropString]
     ];
 
@@ -573,9 +780,9 @@ const generateElectricalSection = (doc: jsPDF, state: AppState, projectName = 'L
         body: logisticsData,
         theme: 'striped',
         headStyles: { fillColor: [50, 50, 50] },
-        styles: { fontSize: 10, cellPadding: 2 },
+        styles: { fontSize: 10, cellPadding: 2, overflow: 'linebreak' },
         columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 } },
-        margin: { left: margin, right: pageWidth / 2 } // Half width
+        margin: { left: margin, right: margin } // Full width
     });
 
     // doc.save("Project_Electrical_Spec.pdf"); // Saved by parent
@@ -813,16 +1020,16 @@ const generateVisualSection = (doc: jsPDF, state: AppState, projectName = 'LED P
             doc.rect(cx - w / 2, y - 1.5, w, 3, 'F'); // Text background
             doc.text(text, cx, y + 1, { align: 'center' });
         } else {
-            // Vertical Line
             const x = x1 - offset;
             doc.line(x1 - 1, y1, x - 2, y1); // Tick 1
             doc.line(x2 - 1, y2, x - 2, y2); // Tick 2
             doc.line(x, y1, x, y2); // Main Line
 
-            // Text center (Rotated 90)
+            // Text center (Rotated bottom-up cleanly)
             const cy = (y1 + y2) / 2;
             doc.setFillColor(255, 255, 255);
-            doc.text(text, x - 1, cy, { align: 'center', angle: 90 });
+            // Move text up manually a bit and rotate appropriately
+            doc.text(text, x + 1.5, cy + 2, { align: 'center', baseline: 'middle', angle: 90 });
         }
     };
 

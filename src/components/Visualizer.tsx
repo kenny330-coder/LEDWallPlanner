@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useRef } from 'react';
 import { TransformWrapper, TransformComponent, type ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
-import { Plus, Minus, RefreshCcw } from 'lucide-react';
+import { Plus, Minus, RefreshCcw, Zap, Monitor, Layers } from 'lucide-react';
 import { useAppState } from '../context/StateContext';
+import { PixelDistanceGraph } from './PixelDistanceGraph';
 import styles from '../styles/Visualizer.module.css';
 
 interface VisualizerProps {
@@ -9,7 +10,7 @@ interface VisualizerProps {
 }
 
 const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
-    const { state } = useAppState();
+    const { state, dispatch } = useAppState();
     const { screenCols, screenRows, panelWidthMm, panelHeightMm, panelPixelsW, panelPixelsH, groundStackHeightMm, stageConfig, blanksCount, brightness, riggingConfig } = state;
 
     // Track theme so cells re-render when it changes
@@ -30,6 +31,11 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
     const canvasRef = useRef<HTMLDivElement>(null);
     const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
+    // Data Mode States
+    const [draggingFeedId, setDraggingFeedId] = useState<string | null>(null);
+    const [dragStartOffset, setDragStartOffset] = useState<{ dx: number, dy: number } | null>(null);
+    const lastClickedPanelRef = useRef<{r: number, c: number, activeId: string} | null>(null);
+
     // Reset view when screen dimensions change
     React.useEffect(() => {
         if (transformRef.current) {
@@ -37,39 +43,177 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
         }
     }, [screenCols, screenRows, panelWidthMm, panelHeightMm, blanksCount, groundStackHeightMm]);
 
+    // Global MouseUp for dragging
+    React.useEffect(() => {
+        const handleGlobalMouseUp = () => {
+            setDraggingFeedId(null);
+        };
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+    }, []);
+
     const blanks = blanksCount || 0;
     const totalRows = screenRows + blanks;
     const totalWidthMm = screenCols * panelWidthMm;
     const totalHeightMm = totalRows * panelHeightMm;
 
-    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!state.visualConfig?.showCoordinates || !canvasRef.current) return;
-
+    // Helper to get pixel coordinates from mouse event
+    const getMappedCoords = (clientX: number, clientY: number) => {
+        if (!canvasRef.current) return null;
         const rect = canvasRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
 
-        // Clamp to bounds
         const clampedX = Math.max(0, Math.min(x, rect.width));
         const clampedY = Math.max(0, Math.min(y, rect.height));
 
         const widthRatio = clampedX / rect.width;
-        // Invert Y because graphics usually origin top-left, but pixels might be wanted from bottom? 
-        // Standard screen coords are top-left 0,0. Let's stick to that.
         const heightRatio = clampedY / rect.height;
 
         const totalPixelsW = screenCols * panelPixelsW;
         const totalPixelsH = totalRows * panelPixelsH;
 
-        setHoverCoords({
+        return {
             x: Math.round(widthRatio * totalPixelsW),
             y: Math.round(heightRatio * totalPixelsH)
-        });
+        };
+    };
+
+    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+        const coords = getMappedCoords(e.clientX, e.clientY);
+        if (!coords) return;
+
+        if (state.visualConfig?.showCoordinates) {
+            setHoverCoords(coords);
+        }
+
+        if (draggingFeedId && dragStartOffset) {
+            const draggedFeed = state.dataConfig?.feeds.find(f => f.id === draggingFeedId);
+            if (!draggedFeed || draggedFeed.fitMode === 'fit' || draggedFeed.fitMode === 'fill') return; // Cannot drag auto-scaled feeds
+
+            const baseFeedW = draggedFeed.resolution === '4k' ? 3840 : draggedFeed.resolution === 'custom' ? (draggedFeed.customWidth || 1000) : 1920;
+            const baseFeedH = draggedFeed.resolution === '4k' ? 2160 : draggedFeed.resolution === 'custom' ? (draggedFeed.customHeight || 1000) : 1080;
+            const dragScale = draggedFeed.fitMode === 'scaled' ? ((draggedFeed.scalePercent || 100) / 100) : 1;
+            const feedW = Math.round(baseFeedW * dragScale);
+            const feedH = Math.round(baseFeedH * dragScale);
+
+            const wallW = screenCols * panelPixelsW;
+            const wallH = totalRows * panelPixelsH;
+
+            let rawX = coords.x - dragStartOffset.dx;
+            let rawY = coords.y - dragStartOffset.dy;
+
+            const SNAP_PX = Math.round(wallW * 0.05); // 5% snap radius
+
+            // Snap anchors: wall edges + other feed edges
+            const xAnchors: number[] = [0, wallW - feedW];
+            const yAnchors: number[] = [0, wallH - feedH];
+
+            for (const f of (state.dataConfig?.feeds || [])) {
+                if (f.id === draggingFeedId || f.fitMode === 'fit' || f.fitMode === 'fill') continue;
+                const fBaseW = f.resolution === '4k' ? 3840 : f.resolution === 'custom' ? (f.customWidth || 1000) : 1920;
+                const fBaseH = f.resolution === '4k' ? 2160 : f.resolution === 'custom' ? (f.customHeight || 1000) : 1080;
+                const fScale = f.fitMode === 'scaled' ? ((f.scalePercent || 100) / 100) : 1;
+                const fw = Math.round(fBaseW * fScale);
+                const fh = Math.round(fBaseH * fScale);
+                xAnchors.push(f.offsetX, f.offsetX + fw, f.offsetX + fw - feedW, f.offsetX - feedW);
+                yAnchors.push(f.offsetY, f.offsetY + fh, f.offsetY + fh - feedH, f.offsetY - feedH);
+            }
+
+            const snapX = xAnchors.reduce((best, a) => Math.abs(rawX - a) < Math.abs(rawX - best) ? a : best, xAnchors[0]);
+            const snapY = yAnchors.reduce((best, a) => Math.abs(rawY - a) < Math.abs(rawY - best) ? a : best, yAnchors[0]);
+
+            const snappedX = Math.abs(rawX - snapX) < SNAP_PX ? snapX : rawX;
+            const snappedY = Math.abs(rawY - snapY) < SNAP_PX ? snapY : rawY;
+
+            // Clamp constraints so it doesn't drift too far out (allow 50% overhang for flexibility, but snap handles edges)
+            const clampedX = Math.max(-(feedW / 2), Math.min(wallW - feedW / 2, snappedX));
+            const clampedY = Math.max(-(feedH / 2), Math.min(wallH - feedH / 2, snappedY));
+
+            dispatch({
+                type: 'UPDATE_DATA_FEED',
+                payload: { id: draggingFeedId, feed: { offsetX: clampedX, offsetY: clampedY } }
+            });
+        }
     };
 
     const handleMouseLeave = () => {
         setHoverCoords(null);
         setHoveredCircuit(null);   // clear circuit highlight when mouse leaves grid
+    };
+
+    const handlePanelClickOrDrag = (r: number, c: number, e?: React.MouseEvent) => {
+        const activeId = state.visualizerMode === 'data' ? state.dataConfig.drawingPortId : state.powerConfig?.drawingCircuitId;
+        if (!activeId) return;
+
+        const pid = `${r}-${c}`;
+        const panelIdx = r * state.screenCols + c;
+        const reverseIdx = (state.screenRows * state.screenCols) - 1 - panelIdx;
+        const isBlankIdx = reverseIdx < state.blanksCount;
+        
+        if (isBlankIdx) return;
+
+        let pidsToAdd: string[] = [];
+
+        if (e?.shiftKey && lastClickedPanelRef.current && lastClickedPanelRef.current.activeId === activeId) {
+            const last = lastClickedPanelRef.current;
+            const minR = Math.min(last.r, r);
+            const maxR = Math.max(last.r, r);
+            const minC = Math.min(last.c, c);
+            const maxC = Math.max(last.c, c);
+
+            for (let ir = minR; ir <= maxR; ir++) {
+                const forward = (ir - minR) % 2 === 0;
+                for (let ic = 0; ic <= (maxC - minC); ic++) {
+                    const actualC = forward ? minC + ic : maxC - ic;
+                    const bIdx = (state.screenRows * state.screenCols) - 1 - (ir * state.screenCols + actualC);
+                    if (bIdx >= state.blanksCount) {
+                        pidsToAdd.push(`${ir}-${actualC}`);
+                    }
+                }
+            }
+        } else {
+            pidsToAdd.push(pid);
+        }
+
+        if (state.visualizerMode === 'data' && state.dataConfig.drawingPortId) {
+            const port = state.dataConfig.ports.find(p => p.id === state.dataConfig.drawingPortId);
+            if (!port) return;
+
+            const toAdd = pidsToAdd.filter(p => !port.panelIds.includes(p));
+            if (toAdd.length === 0) return;
+
+            // Optional: enforce 650,000 max pixels limit
+            const currentPixels = port.panelIds.length * panelPixelsW * panelPixelsH;
+            if (currentPixels + (toAdd.length * panelPixelsW * panelPixelsH) > 650000) {
+               console.warn("Max pixels exceeded for this port.");
+               return; 
+            }
+
+            dispatch({
+                type: 'UPDATE_DATA_PORT',
+                payload: {
+                    id: port.id,
+                    port: { panelIds: [...port.panelIds, ...toAdd] }
+                }
+            });
+            lastClickedPanelRef.current = { r, c, activeId };
+        } else if (state.visualizerMode === 'power' && state.powerConfig?.drawingCircuitId) {
+            const circuit = state.powerConfig.circuits.find(p => p.id === state.powerConfig?.drawingCircuitId);
+            if (!circuit) return;
+
+            const toAdd = pidsToAdd.filter(p => !circuit.panelIds.includes(p));
+            if (toAdd.length === 0) return;
+
+            dispatch({
+                type: 'UPDATE_POWER_CIRCUIT',
+                payload: {
+                    id: circuit.id,
+                    circuit: { panelIds: [...circuit.panelIds, ...toAdd] }
+                }
+            });
+            lastClickedPanelRef.current = { r, c, activeId };
+        }
     };
 
     // Calculate Stage overlap in pixels
@@ -157,8 +301,6 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
         return { grid: g, currentCircuit: currCircuit };
     }, [screenCols, screenRows, blanksCount, maxPanelsPerCircuit]);
 
-    const aspectRatio = (screenCols * panelWidthMm) / ((screenRows + (blanksCount || 0)) * panelHeightMm);
-
     // ── Circuit cell colour palette ────────────────────────────────────────────
     // Each accent provided as a solid hex + raw R,G,B values for rgba() blending.
     // Palette is carefully spread for maximum circuit-to-circuit distinctiveness.
@@ -241,14 +383,14 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
             const rasterW = 1920;
             const rasterH = 1080;
             const colsNeeded = Math.ceil(totalPixelsW / rasterW);
-            const rowsNeeded = Math.ceil(totalPixelsH / rasterH);
+            const rowsNeeded = Math.ceil(activePixelsH / rasterH);
 
             for (let r = 0; r < rowsNeeded; r++) {
                 for (let c = 0; c < colsNeeded; c++) {
                     const leftPercent = ((c * rasterW) / totalPixelsW) * 100;
-                    const topPercent = ((r * rasterH) / totalPixelsH) * 100;
+                    const topPercent = ((r * rasterH) / activePixelsH) * 100;
                     const widthPercent = (rasterW / totalPixelsW) * 100;
-                    const heightPercent = (rasterH / totalPixelsH) * 100;
+                    const heightPercent = (rasterH / activePixelsH) * 100;
 
                     overlays.push(
                         <div key={`hd-${r}-${c}`} style={{
@@ -287,14 +429,14 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
             const rasterW = 3840;
             const rasterH = 2160;
             const colsNeeded = Math.ceil(totalPixelsW / rasterW);
-            const rowsNeeded = Math.ceil(totalPixelsH / rasterH);
+            const rowsNeeded = Math.ceil(activePixelsH / rasterH);
 
             for (let r = 0; r < rowsNeeded; r++) {
                 for (let c = 0; c < colsNeeded; c++) {
                     const leftPercent = ((c * rasterW) / totalPixelsW) * 100;
-                    const topPercent = ((r * rasterH) / totalPixelsH) * 100;
+                    const topPercent = ((r * rasterH) / activePixelsH) * 100;
                     const widthPercent = (rasterW / totalPixelsW) * 100;
-                    const heightPercent = (rasterH / totalPixelsH) * 100;
+                    const heightPercent = (rasterH / activePixelsH) * 100;
 
                     overlays.push(
                         <div key={`4k-${r}-${c}`} style={{
@@ -333,10 +475,43 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
 
     return (
         <div className={styles.panel}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                <h3 className={styles.title}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: '0.5rem' }}>
+                <h3 className={styles.title} style={{ marginBottom: 0 }}>
                     Wall Map
                 </h3>
+                {/* ── Mode Tab Switcher ── */}
+                <div style={{ position: 'relative', display: 'flex', background: 'var(--glass-bg)', padding: '4px', borderRadius: '12px', border: '1px solid var(--glass-border)', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)', gap: '4px' }}>
+                    {(['power', 'data', 'staging'] as const).map(mode => {
+                        const isActive = state.visualizerMode === mode;
+                        const label = mode === 'power' ? 'Power' : mode === 'data' ? 'Data' : 'Staging';
+                        const Icon = mode === 'power' ? Zap : mode === 'data' ? Monitor : Layers;
+                        return (
+                            <button
+                                key={mode}
+                                onClick={() => dispatch({ type: 'SET_VISUALIZER_MODE', payload: mode })}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    padding: '6px 16px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: isActive ? 600 : 500,
+                                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                    background: isActive ? 'var(--glass-highlight)' : 'transparent',
+                                    borderRadius: '8px',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s ease',
+                                    boxShadow: isActive ? '0 1px 4px rgba(0,0,0,0.1), inset 0 1px 1px rgba(255,255,255,0.2)' : 'none',
+                                    position: 'relative'
+                                }}
+                            >
+                                <Icon size={14} style={{ opacity: isActive ? 1 : 0.6 }} />
+                                <span>{label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
             </div>
 
             <div className={styles.canvasContainer} style={{
@@ -360,7 +535,8 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                     minScale={0.1}
                     maxScale={8}
                     centerOnInit
-                    wheel={{ step: 0.1 }}
+                    panning={{ disabled: !!(state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId) }}
+                    wheel={{ step: 0.1, disabled: !!(state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId) }}
                 >
                     {({ zoomIn, zoomOut, resetTransform }) => (
                         <>
@@ -371,7 +547,7 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                             </div>
                             <TransformComponent
                                 wrapperStyle={{ width: '100%', height: '100%', overflow: 'visible' }}
-                                contentStyle={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', overflow: 'visible' }}
+                                contentStyle={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', overflow: 'visible', containerType: 'size' }}
                             >
                                 {/* ══ TRUSS VISUAL (flown) ══ */}
                                 {riggingConfig?.mode === 'flown' && (() => {
@@ -483,10 +659,10 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                 {/* Wrapper for aspect ratio enforcement - Screen + Ground Stack */}
                                 <div style={{
                                     position: 'relative',
-                                    width: aspectRatio > 1 ? '100%' : 'auto',
-                                    height: aspectRatio <= 1 ? '100%' : 'auto',
-                                    aspectRatio: `${aspectRatio}`,
+                                    aspectRatio: `${totalWidthMm} / ${totalHeightMm}`,
+                                    width: `min(100cqw, calc(100cqh * (${totalWidthMm} / ${totalHeightMm})))`,
                                     maxHeight: '100%',
+                                    marginBottom: groundStackHeightMm > 0 && riggingConfig?.mode !== 'flown' ? '32px' : '0',
                                     display: 'flex',
                                     flexDirection: 'column'
                                 }}>
@@ -565,7 +741,7 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                 ? '1px solid rgba(255,255,255,0.12)'
                                                 : '1px solid rgba(180,180,200,0.6)',
                                             borderRadius: '4px',
-                                            overflow: 'hidden',
+                                            overflow: 'visible',
                                             position: 'relative',
                                             cursor: state.visualConfig?.showCoordinates ? 'crosshair' : 'default',
                                             boxShadow: isDark
@@ -597,15 +773,51 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                         {grid.map((row, r) => (
                                             row.map((cid, c) => {
                                                 const isBlank = cid === -1;
-                                                const isObstructionMode = stageConfig?.enabled;
-                                                const hasImage = !!state.visualConfig?.backgroundImage && state.visualConfig?.showBackgroundImage !== false;
+                                                const mode = state.visualizerMode;
+                                                const isStagingMode = mode === 'staging';
+                                                const isPowerMode = mode === 'power';
+                                                const isDataMode = mode === 'data';
                                                 const accent = circuitAccents[(cid - 1) % circuitAccents.length];
+
+                                                const pid = `${r}-${c}`;
+                                                let isRouted = false;
+                                                let routeColor = '';
+                                                let routeIndex = -1;
+                                                let activeInFeed = true; // Default true if no feeds
+
+                                                if (isDataMode && !isBlank) {
+                                                    for (const port of state.dataConfig?.ports || []) {
+                                                        const idx = port.panelIds.indexOf(pid);
+                                                        if (idx !== -1) {
+                                                            isRouted = true;
+                                                            routeColor = port.color;
+                                                            routeIndex = idx;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if ((state.dataConfig?.feeds || []).length > 0) {
+                                                        activeInFeed = false;
+                                                        const pxLeft = c * panelPixelsW;
+                                                        const pxTop = r * panelPixelsH;
+                                                        const pxRight = pxLeft + panelPixelsW;
+                                                        const pxBottom = pxTop + panelPixelsH;
+                                                        for (const feed of state.dataConfig.feeds) {
+                                                            const feedW = feed.resolution === '4k' ? 3840 : 1920;
+                                                            const feedH = feed.resolution === '4k' ? 2160 : 1080;
+                                                            if (pxRight > feed.offsetX && pxLeft < feed.offsetX + feedW &&
+                                                                pxBottom > feed.offsetY && pxTop < feed.offsetY + feedH) {
+                                                                activeInFeed = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
 
                                                 let bgColor: string;
                                                 let cellBorder: string;
                                                 let cellBoxShadow: string | undefined;
                                                 let cellBgImage: string | undefined;
-                                                let cellOpacity = 1;
+                                                let cellOpacity = (isDataMode && !activeInFeed) ? 0.25 : 1;
                                                 let labelColor = 'rgba(255,255,255,0.5)';
                                                 let labelShadow: string | undefined;
 
@@ -618,34 +830,75 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                     cellBorder = isDark
                                                         ? '1px solid rgba(255,255,255,0.07)'
                                                         : '1px solid rgba(150,150,170,0.45)';
-                                                } else if (hasImage) {
-                                                    bgColor = isDark ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.15)';
-                                                    cellBorder = '1px solid rgba(255,255,255,0.08)';
-                                                } else if (isObstructionMode) {
-                                                    // Obstruction mode: blue glow scales with brightness slider
-                                                    // Floor raised to 0.28 — always clearly visible even at 0%
+                                                } else if (isDataMode) {
+                                                    // Data Mode (Port Routing)
+                                                    if (isRouted) {
+                                                        bgColor = routeColor;
+                                                        cellBgImage = `linear-gradient(135deg, rgba(255,255,255,0.2) 0%, rgba(0,0,0,0.1) 100%)`;
+                                                        cellBorder = `1px solid ${routeColor}`;
+                                                        cellBoxShadow = `inset 0 0 12px rgba(255,255,255,0.4), 0 0 8px ${routeColor}`;
+                                                        labelColor = '#000';
+                                                        labelShadow = 'none';
+                                                    } else {
+                                                        // Active but unrouted in Data mode
+                                                        const bFrac = Math.max(0, Math.min(100, brightness)) / 100;
+                                                        const rgbColor = isDark ? '40, 100, 150' : '150, 200, 240';
+                                                        bgColor = `rgba(${rgbColor}, ${0.1 + bFrac * 0.15})`;
+                                                        cellBorder = `1px solid rgba(${rgbColor}, ${0.2 + bFrac * 0.2})`;
+                                                    }
+                                                } else if (isStagingMode) {
+                                                    // Glow modes based on slider selection
+                                                    // Staging = Purple
                                                     const bFrac = Math.max(0, Math.min(100, brightness)) / 100;
-                                                    const bgOpacity = 0.28 + bFrac * 0.36; // 0.28 → 0.64
-                                                    const borderOpacity = 0.35 + bFrac * 0.35; // 0.35 → 0.70
-                                                    const glowOpacity = 0.20 + bFrac * 0.35; // 0.20 → 0.55
-                                                    bgColor = isDark
-                                                        ? `rgba(10, 80, 160, ${bgOpacity.toFixed(3)})`
-                                                        : `rgba(56, 140, 240, ${(bgOpacity * 0.82).toFixed(3)})`;
-                                                    cellBorder = isDark
-                                                        ? `1px solid rgba(56, 160, 255, ${borderOpacity.toFixed(3)})`
-                                                        : `1px solid rgba(30, 120, 220, ${(borderOpacity * 0.9).toFixed(3)})`;
-                                                    cellBoxShadow = isDark
-                                                        ? `inset 0 0 ${10 + bFrac * 18}px rgba(56,160,255,${glowOpacity.toFixed(3)})`
-                                                        : `inset 0 0 ${8 + bFrac * 14}px rgba(30,120,220,${(glowOpacity * 0.85).toFixed(3)})`;
+                                                    const bgOpacity = 0.15 + bFrac * 0.25; 
+                                                    const borderOpacity = 0.25 + bFrac * 0.30; 
+                                                    const glowOpacity = 0.15 + bFrac * 0.20; 
+                                                    
+                                                    const rgbColor = isDark ? '140, 60, 220' : '160, 80, 240';  // Purple
+                                                    
+                                                    bgColor = `rgba(${rgbColor}, ${bgOpacity.toFixed(3)})`;
+                                                    cellBorder = `1px solid rgba(${rgbColor}, ${borderOpacity.toFixed(3)})`;
+                                                    cellBoxShadow = `inset 0 0 ${8 + bFrac * 12}px rgba(${rgbColor},${glowOpacity.toFixed(3)})`;
                                                 } else {
-                                                    // Frosted colored glass — theme-aware
-                                                    const cs = getCellStyle(accent);
-                                                    bgColor = cs.bg;
-                                                    cellBgImage = cs.bgImage;
-                                                    cellBorder = cs.border;
-                                                    cellBoxShadow = cs.boxShadow;
-                                                    labelColor = cs.labelColor;
-                                                    labelShadow = cs.labelShadow;
+                                                    // Power Mode logic
+                                                    const hasCustomPower = (state.powerConfig?.circuits?.length ?? 0) > 0;
+                                                    let isPowerRouted = false;
+                                                    let powerRouteColor = '';
+
+                                                    if (hasCustomPower && !isBlank) {
+                                                        for (const circuit of state.powerConfig!.circuits) {
+                                                            if (circuit.panelIds.includes(pid)) {
+                                                                isPowerRouted = true;
+                                                                powerRouteColor = circuit.color;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (hasCustomPower && !isPowerRouted && !isBlank) {
+                                                        // Unrouted active panel during custom mode
+                                                        const bFrac = Math.max(0, Math.min(100, brightness)) / 100;
+                                                        const rgbColor = isDark ? '40, 100, 150' : '150, 200, 240';
+                                                        bgColor = `rgba(${rgbColor}, ${0.1 + bFrac * 0.15})`;
+                                                        cellBorder = `1px solid rgba(${rgbColor}, ${0.2 + bFrac * 0.2})`;
+                                                    } else {
+                                                        // Render frosted glass (either custom mapped or fallback mapped)
+                                                        let styleAccent;
+                                                        if (isPowerRouted) {
+                                                            const h = powerRouteColor.replace('#', '');
+                                                            const rgbStr = `${parseInt(h.substring(0,2), 16)},${parseInt(h.substring(2,4), 16)},${parseInt(h.substring(4,6), 16)}`;
+                                                            styleAccent = { solid: powerRouteColor, rgb: rgbStr, name: 'Custom' };
+                                                        } else {
+                                                            styleAccent = accent;
+                                                        }
+                                                        const cs = getCellStyle(styleAccent);
+                                                        bgColor = cs.bg;
+                                                        cellBgImage = cs.bgImage;
+                                                        cellBorder = cs.border;
+                                                        cellBoxShadow = cs.boxShadow;
+                                                        labelColor = cs.labelColor;
+                                                        labelShadow = cs.labelShadow;
+                                                    }
                                                 }
 
                                                 // ── Circuit hover highlight ─────────────────────────────
@@ -659,7 +912,35 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                     <div
                                                         key={`${r}-${c}`}
                                                         className={styles.cell}
-                                                        onMouseEnter={!isBlank ? () => setHoveredCircuit(cid) : undefined}
+                                                        onMouseDown={(e) => {
+                                                            if (!isBlank) handlePanelClickOrDrag(r, c, e);
+                                                        }}
+                                                        onMouseEnter={(e) => {
+                                                            if (!isBlank) {
+                                                                setHoveredCircuit(cid);
+                                                                if ((state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId) && e.buttons === 1) {
+                                                                    handlePanelClickOrDrag(r, c, e);
+                                                                }
+                                                            }
+                                                        }}
+                                                        onContextMenu={(e) => {
+                                                            // Only intercept right-click while actively routing
+                                                            const isRouting = !!(state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId);
+                                                            if (!isRouting || isBlank) return;
+                                                            e.preventDefault();
+                                                            const panelId = `${r}-${c}`;
+                                                            if (state.dataConfig?.drawingPortId) {
+                                                                const port = state.dataConfig.ports.find(p => p.id === state.dataConfig.drawingPortId);
+                                                                if (port && port.panelIds.includes(panelId)) {
+                                                                    dispatch({ type: 'UPDATE_DATA_PORT', payload: { id: port.id, port: { panelIds: port.panelIds.filter(id => id !== panelId) } } });
+                                                                }
+                                                            } else if (state.powerConfig?.drawingCircuitId) {
+                                                                const circuit = state.powerConfig.circuits.find(c => c.id === state.powerConfig?.drawingCircuitId);
+                                                                if (circuit && circuit.panelIds.includes(panelId)) {
+                                                                    dispatch({ type: 'UPDATE_POWER_CIRCUIT', payload: { id: circuit.id, circuit: { panelIds: circuit.panelIds.filter(id => id !== panelId) } } });
+                                                                }
+                                                            }
+                                                        }}
                                                         style={{
                                                             backgroundColor: bgColor,
                                                             backgroundImage: cellBgImage,
@@ -671,11 +952,11 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                             justifyContent: 'center',
                                                             position: 'relative',
                                                             boxShadow: cellBoxShadow,
-                                                            // Smooth transition for hover in/out
+                                                             // Smooth transition for hover in/out
                                                             transition: 'opacity 0.12s ease-out, filter 0.12s ease-out',
-                                                            cursor: !isBlank ? 'crosshair' : 'default',
+                                                            cursor: (!isBlank && (state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId)) ? 'crosshair' : 'default',
                                                         }}
-                                                        title={isBlank ? 'Blank Panel' : (!isObstructionMode ? `R${r + 1} C${c + 1} — Circuit ${cid}` : undefined)}
+                                                        title={isBlank ? 'Blank Panel' : (isPowerMode ? `R${r + 1} C${c + 1} — Circuit ${cid}` : undefined)}
                                                     >
                                                         {isBlank && (
                                                             // Subtle BLK label — visible but doesn't compete with active panels
@@ -687,17 +968,31 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                                 userSelect: 'none',
                                                             }}>BLK</span>
                                                         )}
-                                                        {!isObstructionMode && !isBlank && !hasImage && (
-                                                            <span
-                                                                className={styles.circuitLabel}
-                                                                style={{
-                                                                    fontSize: '8px',
-                                                                    fontWeight: 700,
-                                                                    color: labelColor,
-                                                                    letterSpacing: '0.04em',
-                                                                    textShadow: labelShadow,
-                                                                }}
-                                                            >C{cid}</span>
+                                                        {isPowerMode && !isBlank && (() => {
+                                                            // Determine custom circuit index if using custom mapping
+                                                            const hasCustom = (state.powerConfig?.circuits?.length ?? 0) > 0;
+                                                            let customLabel: string | null = null;
+                                                            if (hasCustom) {
+                                                                const circuitIdx = state.powerConfig!.circuits.findIndex(ci => ci.panelIds.includes(pid));
+                                                                customLabel = circuitIdx >= 0 ? `C${circuitIdx + 1}` : '·';
+                                                            }
+                                                            return (
+                                                                <span
+                                                                    className={styles.circuitLabel}
+                                                                    style={{
+                                                                        fontSize: '8px',
+                                                                        fontWeight: 700,
+                                                                        color: labelColor,
+                                                                        letterSpacing: '0.04em',
+                                                                        textShadow: labelShadow,
+                                                                    }}
+                                                                >{customLabel ?? `C${cid}`}</span>
+                                                            );
+                                                        })()}
+                                                        {isDataMode && isRouted && (
+                                                            <span style={{ fontSize: '10px', fontWeight: 800, color: labelColor }}>
+                                                                {routeIndex + 1}
+                                                            </span>
                                                         )}
                                                     </div>
                                                 );
@@ -705,44 +1000,322 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                         ))}
 
 
-                                        {/* Guides (Relative to Safe Area) */}
-                                        {(() => {
-                                            const obstructionMm = stageConfig?.enabled
-                                                ? Math.max(0, stageConfig.heightMm - (groundStackHeightMm || 0)) + (stageConfig.safeBufferMm ?? 152)
-                                                : 0;
-                                            const safeHeightMm = Math.max(0, totalHeightMm - obstructionMm);
-                                            const safeHeightPct = (safeHeightMm / totalHeightMm) * 100;
+                                        {/* Visual Guides Container (Constrains all drawn overlays to the Active Video Area, ignoring mechanical blanks) */}
+                                        <div style={{
+                                            position: 'absolute',
+                                            top: 0,
+                                            left: 0,
+                                            width: '100%',
+                                            height: `${(screenRows / (screenRows + (blanksCount || 0))) * 100}%`,
+                                            pointerEvents: 'none'
+                                        }}>
+                                            {/* Guides (Center/Thirds relative to Safe Active Area) */}
+                                            {(() => {
+                                                const activeHeightMm = screenRows * panelHeightMm;
+                                                // activeObstructionMm is the amount of stage obstruction that actually hits the active panels
+                                                const obstructionMm = stageConfig?.enabled
+                                                    ? Math.max(0, stageConfig.heightMm - (groundStackHeightMm || 0)) + (stageConfig.safeBufferMm ?? 152)
+                                                    : 0;
+                                                const activeObstructionMm = Math.max(0, obstructionMm - blanksHeightMm);
+                                                const safeActiveHeightMm = Math.max(0, activeHeightMm - activeObstructionMm);
+                                                const safeActiveHeightPct = (safeActiveHeightMm / activeHeightMm) * 100;
 
-                                            return (
-                                                <>
-                                                    {state.visualConfig?.showCenterGuides && (
-                                                        <>
-                                                            {/* Horizontal Center of Safe Area */}
-                                                            <div style={{ position: 'absolute', top: `${safeHeightPct / 2}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#00ff00', zIndex: 120, opacity: 0.8, pointerEvents: 'none' }}></div>
-                                                            {/* Vertical Center (Cropped to Safe Area) */}
-                                                            <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: `${safeHeightPct}%`, backgroundColor: '#00ff00', zIndex: 120, opacity: 0.8, pointerEvents: 'none' }}></div>
-                                                        </>
-                                                    )}
-                                                    {state.visualConfig?.showThirdsGuides && (
-                                                        <>
-                                                            {/* Horiz Thirds of Safe Area */}
-                                                            <div style={{ position: 'absolute', top: `${safeHeightPct / 3}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderTop: '1px dashed #06b6d4' }}></div>
-                                                            <div style={{ position: 'absolute', top: `${safeHeightPct * 2 / 3}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderTop: '1px dashed #06b6d4' }}></div>
-                                                            {/* Vert Thirds (Cropped to Safe Area) */}
-                                                            <div style={{ position: 'absolute', top: 0, left: '33.33%', width: '1px', height: `${safeHeightPct}%`, backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderLeft: '1px dashed #06b6d4' }}></div>
-                                                            <div style={{ position: 'absolute', top: 0, left: '66.66%', width: '1px', height: `${safeHeightPct}%`, backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderLeft: '1px dashed #06b6d4' }}></div>
-                                                        </>
-                                                    )}
-                                                </>
-                                            );
-                                        })()}
+                                                return (
+                                                    <>
+                                                        {state.visualConfig?.showCenterGuides && (
+                                                            <>
+                                                                {/* Horizontal Center of Safe Active Area */}
+                                                                <div style={{ position: 'absolute', top: `${safeActiveHeightPct / 2}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#00ff00', zIndex: 120, opacity: 0.8, pointerEvents: 'none' }}></div>
+                                                                <div style={{ position: 'absolute', top: 0, left: '50%', width: '1px', height: `${safeActiveHeightPct}%`, backgroundColor: '#00ff00', zIndex: 120, opacity: 0.8, pointerEvents: 'none' }}></div>
+                                                            </>
+                                                        )}
+                                                        {state.visualConfig?.showThirdsGuides && (
+                                                            <>
+                                                                {/* Horiz Thirds of Safe Area */}
+                                                                <div style={{ position: 'absolute', top: `${safeActiveHeightPct / 3}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderTop: '1px dashed #06b6d4' }}></div>
+                                                                <div style={{ position: 'absolute', top: `${safeActiveHeightPct * 2 / 3}%`, left: 0, width: '100%', height: '1px', backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderTop: '1px dashed #06b6d4' }}></div>
+                                                                {/* Vert Thirds */}
+                                                                <div style={{ position: 'absolute', top: 0, left: '33.33%', width: '1px', height: `${safeActiveHeightPct}%`, backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderLeft: '1px dashed #06b6d4' }}></div>
+                                                                <div style={{ position: 'absolute', top: 0, left: '66.66%', width: '1px', height: `${safeActiveHeightPct}%`, backgroundColor: '#06b6d4', zIndex: 120, opacity: 0.6, pointerEvents: 'none', borderLeft: '1px dashed #06b6d4' }}></div>
+                                                            </>
+                                                        )}
+                                                    </>
+                                                );
+                                            })()}
 
-                                        {/* Coords Tooltip */}
+                                            {/* Resolution Overlays */}
+                                            <div style={{
+                                                position: 'absolute',
+                                                top: 0,
+                                                left: 0,
+                                                width: '100%',
+                                                height: '100%',
+                                                pointerEvents: 'none',
+                                                overflow: 'hidden'
+                                            }}>
+                                                {state.visualConfig?.showResolutionOverlays !== false && renderResolutionOverlays()}
+                                            </div>
+
+                                            {/* 16:9 Fit/Fill Overlays (Must be inside active bounds!) */}
+                                            {state.visualConfig?.show16by9Overlay && (() => {
+                                                const w = screenCols * panelPixelsW;
+                                                const h = screenRows * panelPixelsH;
+                                                const wallRatio = w / h;
+                                                const targetRatio = 16 / 9;
+                                                const isWider = wallRatio > targetRatio;
+                                                const diff = Math.abs(wallRatio - targetRatio);
+                                                
+                                                // The formula for percentage missing/cropped
+                                                const cropPct = isWider
+                                                    ? (1 - targetRatio / wallRatio) * 100
+                                                    : (1 - wallRatio / targetRatio) * 100;
+
+                                                const fitW = isWider ? (targetRatio / wallRatio) * 100 : 100;
+                                                const fitH = isWider ? 100 : (wallRatio / targetRatio) * 100;
+                                                
+                                                const fillW = isWider ? 100 : (targetRatio / wallRatio) * 100;
+                                                const fillH = isWider ? (wallRatio / targetRatio) * 100 : 100;
+                                                
+                                                return (
+                                                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110 }}>
+                                                        {/* RED 16:9 FILL BOX (Stretches beyond wall if mismatch) */}
+                                                        {diff > 0.01 && (
+                                                            <div style={{
+                                                                position: 'absolute',
+                                                                width: `${fillW}%`,
+                                                                height: `${fillH}%`,
+                                                                border: '2px dashed rgba(239, 68, 68, 0.8)',
+                                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                pointerEvents: 'none'
+                                                            }}>
+                                                                <div style={{ position: 'absolute', top: '-24px', background: 'rgba(239, 68, 68, 0.95)', color: 'white', fontSize: '10px', padding: '3px 8px', borderRadius: '4px', fontWeight: 600, boxShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
+                                                                    16:9 FILL (Crops {cropPct.toFixed(1)}% {isWider ? 'Top/Bottom' : 'Left/Right'})
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* YELLOW 16:9 FIT BOX (Fits inside wall but leaves blank space) */}
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            width: `${fitW}%`,
+                                                            height: `${fitH}%`,
+                                                            border: '2px solid rgba(234, 179, 8, 0.8)',
+                                                            background: 'repeating-linear-gradient(45deg, rgba(234, 179, 8, 0.05), rgba(234, 179, 8, 0.05) 10px, rgba(0, 0, 0, 0) 10px, rgba(0, 0, 0, 0) 20px)',
+                                                            boxShadow: 'inset 0 0 30px rgba(0,0,0,0.6)',
+                                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                            pointerEvents: 'none'
+                                                        }}>
+                                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', padding: '8px 12px', background: 'rgba(0,0,0,0.85)', borderRadius: '6px', border: '1px solid rgba(234, 179, 8, 0.3)', backdropFilter: 'blur(4px)' }}>
+                                                                <span style={{ color: 'var(--accent-yellow)', fontWeight: 700, fontSize: '13px', letterSpacing: '1px' }}>16:9 SOURCE FIT</span>
+                                                                {diff > 0.01 ? (
+                                                                    <span style={{ color: 'white', fontSize: '11px', fontWeight: 500 }}>
+                                                                        Leaves {cropPct.toFixed(1)}% {isWider ? 'Width Blank (Pillarbox)' : 'Height Blank (Letterbox)'}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span style={{ color: '#22c55e', fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '1px' }}>Perfect Match</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+
+                                        {/* Data Routing Feeds & Ports */}
+                                        {state.visualizerMode === 'data' && (
+                                            <>
+                                                {/* Daisy Chain Cables */}
+                                                <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 100 }} viewBox={`0 0 ${totalPixelsW} ${totalPixelsH}`} preserveAspectRatio="none">
+                                                    {state.dataConfig?.ports.map(port => {
+                                                        if (port.panelIds.length < 2) return null;
+                                                        const coordList = port.panelIds.map(pid => {
+                                                            const [r, c] = pid.split('-').map(Number);
+                                                            return { x: (c + 0.5) * panelPixelsW, y: (r + 0.5) * panelPixelsH };
+                                                        });
+                                                        const points = coordList.map(p => `${p.x},${p.y}`).join(' ');
+
+                                                        return (
+                                                            <g key={port.id}>
+                                                                {/* White outline for contrast */}
+                                                                <polyline
+                                                                    points={points}
+                                                                    fill="none"
+                                                                    stroke="white"
+                                                                    strokeWidth="14"
+                                                                    strokeLinejoin="round"
+                                                                    strokeLinecap="round"
+                                                                    opacity="0.5"
+                                                                />
+                                                                {/* Colored cable line */}
+                                                                <polyline
+                                                                    points={points}
+                                                                    fill="none"
+                                                                    stroke={port.color}
+                                                                    strokeWidth="10"
+                                                                    strokeLinejoin="round"
+                                                                    strokeLinecap="round"
+                                                                    style={{ filter: `drop-shadow(0 0 10px ${port.color}) drop-shadow(0 0 3px ${port.color})` }}
+                                                                />
+                                                                {/* Clean start marker dot */}
+                                                                <circle 
+                                                                    cx={coordList[0].x} 
+                                                                    cy={coordList[0].y} 
+                                                                    r="12" 
+                                                                    fill={port.color} 
+                                                                    stroke="white" 
+                                                                    strokeWidth="4" 
+                                                                    style={{ filter: `drop-shadow(0 0 6px rgba(0,0,0,0.5))` }}
+                                                                />
+                                                            </g>
+                                                        );
+                                                    })}
+                                                </svg>
+
+                                                {/* Draggable Feed Bounds */}
+                                                {state.dataConfig?.feeds.map(feed => {
+                                                    const isCustom = feed.resolution === 'custom';
+                                                    const feedW_orig = feed.resolution === '4k' ? 3840 : isCustom ? (feed.customWidth || 1000) : 1920;
+                                                    const feedH_orig = feed.resolution === '4k' ? 2160 : isCustom ? (feed.customHeight || 1000) : 1080;
+                                                    
+                                                    const isFit = feed.fitMode === 'fit';
+                                                    const isFill = feed.fitMode === 'fill';
+                                                    const isCustomScaled = feed.fitMode === 'scaled';
+                                                    const isAutoScaled = isFit || isFill;
+
+                                                    let fw = feedW_orig;
+                                                    let fh = feedH_orig;
+                                                    let fLeft = feed.offsetX;
+                                                    let fTop = feed.offsetY;
+                                                    let scaleStr = '100';
+
+                                                    if (isAutoScaled) {
+                                                        // Use ACTIVE pixels only (no blank rows) for fit/fill scale
+                                                        const scale = isFit
+                                                           ? Math.min(totalPixelsW / feedW_orig, activePixelsH / feedH_orig)
+                                                           : Math.max(totalPixelsW / feedW_orig, activePixelsH / feedH_orig);
+
+                                                        fw = feedW_orig * scale;
+                                                        fh = feedH_orig * scale;
+                                                        // Centre within active area (top of active area = 0)
+                                                        fLeft = (totalPixelsW - fw) / 2;
+                                                        fTop = (activePixelsH - fh) / 2;
+                                                        scaleStr = (scale * 100).toFixed(1);
+                                                    } else if (isCustomScaled) {
+                                                        const scale = (feed.scalePercent || 100) / 100;
+                                                        fw = feedW_orig * scale;
+                                                        fh = feedH_orig * scale;
+                                                        scaleStr = (scale * 100).toFixed(1);
+                                                    }
+
+                                                    // Percentages relative to full container (active + blanks)
+                                                    const leftPct = (fLeft / totalPixelsW) * 100;
+                                                    const topPct  = (fTop  / totalPixelsH) * 100;
+                                                    const widthPct  = (fw / totalPixelsW) * 100;
+                                                    const heightPct = (fh / totalPixelsH) * 100;
+                                                    const color = feed.resolution === '4k' ? 'var(--accent-purple)' : isCustom ? 'var(--accent-green)' : 'var(--accent-blue)';
+
+                                                    return (
+                                                        <div
+                                                            key={feed.id}
+                                                            onMouseDown={(e) => {
+                                                                if (state.dataConfig?.drawingPortId || isAutoScaled) return;
+                                                                e.stopPropagation();
+                                                                const coords = getMappedCoords(e.clientX, e.clientY);
+                                                                if (coords) {
+                                                                    setDraggingFeedId(feed.id);
+                                                                    setDragStartOffset({ dx: coords.x - feed.offsetX, dy: coords.y - feed.offsetY });
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                position: 'absolute',
+                                                                left: `${leftPct}%`,
+                                                                top: `${topPct}%`,
+                                                                width: `${widthPct}%`,
+                                                                height: `${heightPct}%`,
+                                                                border: `2px dashed ${color}`,
+                                                                backgroundColor: draggingFeedId === feed.id ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.2)',
+                                                                cursor: state.dataConfig?.drawingPortId ? 'crosshair' : (isAutoScaled ? 'default' : 'grab'),
+                                                                zIndex: 110,
+                                                                pointerEvents: state.dataConfig?.drawingPortId ? 'none' : 'auto',
+                                                                boxShadow: `0 0 16px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.08)`
+                                                            }}
+                                                        >
+                                                            {/* Label bar */}
+                                                            <div style={{ position: 'absolute', top: 0, left: 0, transform: 'translateY(-100%)', background: color, color: 'white', padding: '2px 8px', fontSize: '10px', fontWeight: 700, borderRadius: '4px 4px 0 0', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                {feed.resolution.toUpperCase()} FEED {(isAutoScaled || isCustomScaled) && `(${feed.fitMode.toUpperCase()})`}
+                                                            </div>
+
+                                                            {/* Scaled percentage indicator */}
+                                                            {(isAutoScaled || isCustomScaled) && (
+                                                                <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: 'rgba(0,0,0,0.8)', color: 'white', padding: '6px 16px', borderRadius: '6px', fontSize: '12px', fontWeight: 800, border: `1px solid ${color}`, backdropFilter: 'blur(4px)', pointerEvents: 'none', letterSpacing: '0.05em' }}>
+                                                                    SCALED {scaleStr}%
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </>
+                                        )}
+
+                                        {/* Power Circuit Cable Overlay */}
+                                        {state.visualizerMode === 'power' && (state.powerConfig?.circuits?.length ?? 0) > 0 && (
+                                            <svg
+                                                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 100 }}
+                                                viewBox={`0 0 ${totalPixelsW} ${totalPixelsH}`}
+                                                preserveAspectRatio="none"
+                                            >
+                                                {state.powerConfig!.circuits.map(circuit => {
+                                                    if (circuit.panelIds.length < 2) return null;
+                                                    const coordList = circuit.panelIds.map(pid => {
+                                                        const [r, c] = pid.split('-').map(Number);
+                                                        return { x: (c + 0.5) * panelPixelsW, y: (r + 0.5) * panelPixelsH };
+                                                    });
+                                                    const points = coordList.map(p => `${p.x},${p.y}`).join(' ');
+                                                    return (
+                                                        <g key={circuit.id}>
+                                                            {/* White outline for contrast */}
+                                                            <polyline
+                                                                points={points}
+                                                                fill="none"
+                                                                stroke="white"
+                                                                strokeWidth="14"
+                                                                strokeLinejoin="round"
+                                                                strokeLinecap="round"
+                                                                opacity="0.45"
+                                                            />
+                                                            {/* Colored cable */}
+                                                            <polyline
+                                                                points={points}
+                                                                fill="none"
+                                                                stroke={circuit.color}
+                                                                strokeWidth="10"
+                                                                strokeLinejoin="round"
+                                                                strokeLinecap="round"
+                                                                style={{ filter: `drop-shadow(0 0 10px ${circuit.color}) drop-shadow(0 0 3px ${circuit.color})` }}
+                                                            />
+                                                            {/* Start marker — filled dot */}
+                                                            <circle
+                                                                cx={coordList[0].x}
+                                                                cy={coordList[0].y}
+                                                                r="14"
+                                                                fill={circuit.color}
+                                                                stroke="white"
+                                                                strokeWidth="5"
+                                                                style={{ filter: `drop-shadow(0 0 6px rgba(0,0,0,0.5))` }}
+                                                            />
+                                                        </g>
+                                                    );
+                                                })}
+                                            </svg>
+                                        )}
+
+                                        {/* Coords Tooltip (Needs to stay out of the active container to show correct Y values on blanks if needed, though active height restricts hover implicitly anyway) */}
+
                                         {state.visualConfig?.showCoordinates && hoverCoords && (
                                             <div style={{
                                                 position: 'absolute',
                                                 left: hoverCoords.x / (screenCols * panelPixelsW) * 100 + '%',
-                                                top: hoverCoords.y / (screenRows * panelPixelsH) * 100 + '%',
+                                                top: hoverCoords.y / ((screenRows + (blanksCount || 0)) * panelPixelsH) * 100 + '%',
                                                 transform: 'translate(10px, 10px)',
                                                 backgroundColor: 'rgba(0,0,0,0.8)',
                                                 color: 'white',
@@ -757,18 +1330,6 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                 X: {hoverCoords.x} | Y: {hoverCoords.y}
                                             </div>
                                         )}
-
-                                        {/* Resolution Overlays */}
-                                        <div style={{
-                                            position: 'absolute',
-                                            top: 0,
-                                            left: 0,
-                                            width: '100%',
-                                            height: '100%',
-                                            pointerEvents: 'none'
-                                        }}>
-                                            {state.visualConfig?.showResolutionOverlays !== false && renderResolutionOverlays()}
-                                        </div>
                                     </div>
 
                                     {/* STAGE OBSTRUCTION OVERLAY */}
@@ -923,74 +1484,82 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                             )}
                                         </>
                                     )}
-                                </div>
 
-                                {/* GROUND STACK VISUAL — hidden when flown */}
-                                {groundStackHeightMm > 0 && riggingConfig?.mode !== 'flown' && (
-                                    <div style={{
-                                        width: '100%',
-                                        height: '28px',
-                                        flexShrink: 0,
-                                        display: 'flex',
-                                        justifyContent: 'center',
-                                        alignItems: 'flex-start',
-                                        marginTop: '2px',
-                                    }}>
+                                    {/* GROUND STACK VISUAL — absolute offset so it scales perfectly with grid */}
+                                    {groundStackHeightMm > 0 && riggingConfig?.mode !== 'flown' && (
                                         <div style={{
+                                            position: 'absolute',
+                                            bottom: '-30px',
+                                            left: 0,
                                             width: '100%',
-                                            height: '1rem',
-                                            borderLeft: '1px solid var(--text-secondary)',
-                                            borderRight: '1px solid var(--text-secondary)',
-                                            borderTop: '1px solid var(--text-secondary)',
+                                            height: '28px',
                                             display: 'flex',
                                             justifyContent: 'center',
-                                            position: 'relative'
+                                            alignItems: 'flex-start',
+                                            marginTop: '2px',
                                         }}>
-                                            <span style={{
-                                                position: 'absolute',
-                                                top: '100%',
-                                                fontSize: '10px',
-                                                color: 'var(--text-secondary)',
-                                                marginTop: '2px'
+                                            <div style={{
+                                                width: '100%',
+                                                height: '1rem',
+                                                borderLeft: '1px solid var(--text-secondary)',
+                                                borderRight: '1px solid var(--text-secondary)',
+                                                borderTop: '1px solid var(--text-secondary)',
+                                                display: 'flex',
+                                                justifyContent: 'center',
+                                                position: 'relative'
                                             }}>
-                                                {riggingConfig?.groundSupportType === 'baseplate'
-                                                    ? `Baseplate: ${groundStackHeightMm}mm (${(groundStackHeightMm / 25.4).toFixed(1)} in)`
-                                                    : `Towers: ${(groundStackHeightMm / 304.8).toFixed(1)} ft`}
-                                            </span>
-                                            <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', left: '15%' }}></div>
-                                            <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', right: '15%' }}></div>
-                                            {riggingConfig?.groundSupportType === 'towers' && (
-                                                <>
-                                                    <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', left: '40%' }}></div>
-                                                    <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', right: '40%' }}></div>
-                                                </>
-                                            )}
+                                                <span style={{
+                                                    position: 'absolute',
+                                                    top: '100%',
+                                                    fontSize: '10px',
+                                                    color: 'var(--text-secondary)',
+                                                    marginTop: '2px'
+                                                }}>
+                                                    {riggingConfig?.groundSupportType === 'baseplate'
+                                                        ? `Baseplate: ${groundStackHeightMm}mm (${(groundStackHeightMm / 25.4).toFixed(1)} in)`
+                                                        : `Towers: ${(groundStackHeightMm / 304.8).toFixed(1)} ft`}
+                                                </span>
+                                                <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', left: '15%' }}></div>
+                                                <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', right: '15%' }}></div>
+                                                {riggingConfig?.groundSupportType === 'towers' && (
+                                                    <>
+                                                        <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', left: '40%' }}></div>
+                                                        <div style={{ width: '2px', height: '100%', backgroundColor: 'var(--text-secondary)', position: 'absolute', right: '40%' }}></div>
+                                                    </>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
-                                )}
+                                    )}
+                                </div>
                             </TransformComponent>
                         </>
                     )}
                 </TransformWrapper>
+
+                {state.visualizerMode === 'data' && state.visualConfig?.showViewingDistance && (
+                    <PixelDistanceGraph state={state} />
+                )}
             </div>
 
-            <div className={styles.legend}>
-                {Array.from({ length: currentCircuit }).map((_, i) => {
-                    const accent = circuitAccents[i % circuitAccents.length];
-                    return (
-                        <div key={i} className={styles.legendItem}>
-                            <span
-                                className={styles.dot}
-                                style={{
-                                    backgroundColor: accent.solid,
-                                    filter: `drop-shadow(0 0 4px ${accent.solid}) drop-shadow(0 0 2px ${accent.solid})`,
-                                }}
-                            />
-                            C{i + 1}
-                        </div>
-                    );
-                })}
-            </div>
+            {state.visualizerMode === 'power' && (
+                <div className={styles.legend}>
+                    {Array.from({ length: currentCircuit }).map((_, i) => {
+                        const accent = circuitAccents[i % circuitAccents.length];
+                        return (
+                            <div key={i} className={styles.legendItem}>
+                                <span
+                                    className={styles.dot}
+                                    style={{
+                                        backgroundColor: accent.solid,
+                                        filter: `drop-shadow(0 0 4px ${accent.solid}) drop-shadow(0 0 2px ${accent.solid})`,
+                                    }}
+                                />
+                                C{i + 1}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 };

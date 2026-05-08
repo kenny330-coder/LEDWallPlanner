@@ -2,9 +2,10 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { useAppState } from '../context/StateContext';
 import styles from '../styles/Settings.module.css';
 import { getAmbientLuxFromBrightness } from '../utils/powerLogic';
-
+import { DISTRO_TYPES } from './DistroWidget';
 import { initialPanels, type PanelSpec } from '../data/panelSpecs';
 import { ChevronDown, Check, Moon, Monitor, Cloud, Sun, Zap, Layers, Eye, Activity, Anchor } from 'lucide-react';
+
 
 
 const InchesInput: React.FC<{
@@ -557,6 +558,36 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
                         </>
                     )}
                 </div>
+
+                {/* Blanks Row */}
+                <div className={styles.row} style={{ marginTop: '0.5rem' }}>
+                    <div className={styles.inputGroup} style={{ flex: 1 }}>
+                        <label className={styles.inputLabel}>Blank Rows (Bottom)</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <button
+                                onClick={() => dispatch({ type: 'SET_BLANKS_COUNT', payload: Math.max(0, (state.blanksCount || 0) - 1) })}
+                                className={styles.input}
+                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                            >-</button>
+                            <input
+                                type="number"
+                                min="0"
+                                max="20"
+                                value={state.blanksCount || 0}
+                                onChange={(e) => dispatch({ type: 'SET_BLANKS_COUNT', payload: Math.max(0, parseInt(e.target.value) || 0) })}
+                                className={styles.input}
+                                style={{ textAlign: 'center' }}
+                            />
+                            <button
+                                onClick={() => dispatch({ type: 'SET_BLANKS_COUNT', payload: (state.blanksCount || 0) + 1 })}
+                                className={styles.input}
+                                style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
+                            >+</button>
+                        </div>
+                    </div>
+                    <div style={{ flex: 1 }}></div>
+                </div>
+
                 <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'var(--glass-highlight)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border-t)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                         <span style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', fontWeight: 600 }}>Active Panel Specification</span>
@@ -595,7 +626,13 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
                     <button
                         role="switch"
                         aria-checked={state.stageConfig?.enabled || false}
-                        onClick={() => dispatch({ type: 'SET_STAGE_CONFIG', payload: { enabled: !state.stageConfig?.enabled } })}
+                        onClick={() => {
+                            const isNowEnabled = !state.stageConfig?.enabled;
+                            dispatch({ type: 'SET_STAGE_CONFIG', payload: { enabled: isNowEnabled } });
+                            if (isNowEnabled) {
+                                dispatch({ type: 'SET_VISUALIZER_MODE', payload: 'staging' });
+                            }
+                        }}
                         style={{
                             width: '40px',
                             height: '22px',
@@ -624,37 +661,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
                     </button>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    {/* Blanks Row */}
-                    <div className={styles.row}>
-                        <div className={styles.inputGroup} style={{ flex: 1 }}>
-                            <label className={styles.inputLabel}>Blank Rows (Bottom)</label>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                                <button
-                                    onClick={() => dispatch({ type: 'SET_BLANKS_COUNT', payload: Math.max(0, (state.blanksCount || 0) - 1) })}
-                                    className={styles.input}
-                                    style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                                >-</button>
-                                <input
-                                    type="number"
-                                    min="0"
-                                    max="20"
-                                    value={state.blanksCount || 0}
-                                    onChange={(e) => dispatch({ type: 'SET_BLANKS_COUNT', payload: Math.max(0, parseInt(e.target.value) || 0) })}
-                                    className={styles.input}
-                                    style={{ textAlign: 'center' }}
-                                />
-                                <button
-                                    onClick={() => dispatch({ type: 'SET_BLANKS_COUNT', payload: (state.blanksCount || 0) + 1 })}
-                                    className={styles.input}
-                                    style={{ width: 'auto', padding: '0.5rem', cursor: 'pointer' }}
-                                >+</button>
-                            </div>
-                        </div>
-                        <div style={{ flex: 1 }}></div>
-                    </div>
-
-                    <div className={styles.row}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>                    <div className={styles.row}>
                         {/* Stage Width — ±4 ft per click */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
                             <label className={styles.inputLabel}>Stage W (ft)</label>
@@ -1259,12 +1266,32 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <input
                                 type="checkbox"
+                                id="show16by9Overlay"
+                                checked={state.visualConfig?.show16by9Overlay || false}
+                                onChange={(e) => dispatch({ type: 'SET_VISUAL_CONFIG', payload: { show16by9Overlay: e.target.checked } })}
+                                style={{ cursor: 'pointer' }}
+                            />
+                            <label htmlFor="show16by9Overlay" style={{ color: 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer' }}>16:9 Fit/Fill</label>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <input
+                                type="checkbox"
                                 id="resOverlays"
                                 checked={state.visualConfig?.showResolutionOverlays ?? true}
                                 onChange={(e) => dispatch({ type: 'SET_VISUAL_CONFIG', payload: { showResolutionOverlays: e.target.checked } })}
                                 style={{ cursor: 'pointer' }}
                             />
                             <label htmlFor="resOverlays" style={{ color: 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer' }}>HD / 4K</label>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <input
+                                type="checkbox"
+                                id="viewingDistance"
+                                checked={state.visualConfig?.showViewingDistance ?? false}
+                                onChange={(e) => dispatch({ type: 'SET_VISUAL_CONFIG', payload: { showViewingDistance: e.target.checked } })}
+                                style={{ cursor: 'pointer' }}
+                            />
+                            <label htmlFor="viewingDistance" style={{ color: 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer' }}>Viewing Distance</label>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: state.visualConfig?.backgroundImage ? 1 : 0.5 }}>
                             <input
@@ -1314,6 +1341,56 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
 
             {/* Power Settings */}
             <CollapsibleSection title="Power Specs" storageKey="spp_power_open" defaultOpen={true} icon={<Zap />}>
+            {/* Circuit Presets */}
+                {(() => {
+                    const presets = [
+                        { label: 'Edison', sublabel: '120V / 20A', voltage: 110, amps: 20 },
+                        { label: 'Soca 208', sublabel: '208V / 20A', voltage: 208, amps: 20 },
+                        { label: 'Soca 240', sublabel: '240V / 20A', voltage: 240, amps: 20 },
+                        { label: 'Stove', sublabel: '240V / 50A', voltage: 240, amps: 50 },
+                        { label: 'Camlock', sublabel: '208V / 200A', voltage: 208, amps: 200 },
+                    ];
+                    return (
+                        <div style={{ marginBottom: '0.75rem' }}>
+                            <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '0.4rem' }}>
+                                Circuit Presets
+                            </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                                {presets.map(p => {
+                                    const active = state.voltage === p.voltage && state.circuitBreakerAmps === p.amps;
+                                    return (
+                                        <button
+                                            key={p.label}
+                                            onClick={() => {
+                                                dispatch({ type: 'SET_VOLTAGE', payload: p.voltage });
+                                                dispatch({ type: 'SET_BREAKER', payload: p.amps });
+                                            }}
+                                            style={{
+                                                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                                                padding: '0.35rem 0.6rem',
+                                                borderRadius: 'var(--radius-xs)',
+                                                border: `1px solid ${active ? 'var(--accent-blue)' : 'var(--glass-border)'}`,
+                                                background: active ? 'rgba(10,132,255,0.15)' : 'var(--glass-bg)',
+                                                color: active ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                                                cursor: 'pointer',
+                                                fontSize: '0.7rem',
+                                                fontWeight: 600,
+                                                lineHeight: 1.2,
+                                                transition: 'all 0.15s',
+                                                fontFamily: 'inherit',
+                                                flex: '1 1 auto',
+                                            }}
+                                            title={`Set to ${p.voltage}V / ${p.amps}A`}
+                                        >
+                                            <span>{p.label}</span>
+                                            <span style={{ fontSize: '0.6rem', fontWeight: 400, opacity: 0.75 }}>{p.sublabel}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    );
+                })()}
                 <SelectDropdown
                     label="Voltage (V)"
                     value={state.voltage}
@@ -1333,13 +1410,66 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
                         { value: 15, label: "15A (Residential Standard)" },
                         { value: 20, label: "20A (Commercial / Production)" },
                         { value: 30, label: "30A (Twist-Lock / L6-30)" },
-                        { value: 50, label: "50A (Range / CS / Camlock)" }
+                        { value: 50, label: "50A (Range / CS / Stove)" },
+                        { value: 200, label: "200A (Camlock / Distro)" }
                     ]}
                     onSelect={(v) => dispatch({ type: 'SET_BREAKER', payload: v })}
                     isOpen={isBreakerOpen}
                     setIsOpen={setIsBreakerOpen}
                 />
+
+                {/* ── Power Distro Type ── */}
+                <div style={{ marginTop: '0.75rem' }}>
+                    <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '0.4rem' }}>
+                        Distro Type
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        {DISTRO_TYPES.map(dt => {
+                            const active = (state.distroConfig?.type ?? 'lex-lunchbox') === dt.id;
+                            return (
+                                <button
+                                    key={dt.id}
+                                    onClick={() => dispatch({ type: 'SET_DISTRO_CONFIG', payload: { type: dt.id, circuitsPerDistro: dt.circuitsPerDistro } })}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                        padding: '0.3rem 0.55rem', borderRadius: '7px',
+                                        border: `1px solid ${active ? '#f59e0b' : 'var(--glass-border)'}`,
+                                        background: active ? 'rgba(245,158,11,0.11)' : 'var(--glass-bg)',
+                                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', transition: 'all 0.12s',
+                                    }}
+                                    title={dt.description}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', minWidth: 0 }}>
+                                        <span style={{ fontSize: '0.69rem', fontWeight: active ? 700 : 500, color: active ? '#f59e0b' : 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {dt.shortLabel}
+                                        </span>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0, marginLeft: '0.3rem' }}>
+                                        <span style={{ fontSize: '0.55rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                            {dt.inConnector.split('(')[0].trim()} → {dt.outConnector.split('(')[0].trim()}
+                                        </span>
+                                        <span style={{ fontSize: '0.58rem', fontWeight: 600, whiteSpace: 'nowrap', color: active ? '#f59e0b' : 'var(--text-secondary)', background: active ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.05)', borderRadius: '3px', padding: '1px 5px' }}>
+                                            {dt.circuitsPerDistro}ct
+                                        </span>
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {/* Circuits-per-unit override */}
+                    <div style={{ marginTop: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Circuits / unit:</label>
+                        <input
+                            type="number" min={1} max={48}
+                            value={state.distroConfig?.circuitsPerDistro ?? 6}
+                            onChange={e => dispatch({ type: 'SET_DISTRO_CONFIG', payload: { circuitsPerDistro: Math.max(1, parseInt(e.target.value) || 1) } })}
+                            style={{ width: '52px', padding: '0.18rem 0.38rem', fontSize: '0.72rem', background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '5px', color: 'var(--text-primary)', fontFamily: 'inherit' }}
+                        />
+                    </div>
+                </div>
             </CollapsibleSection>
+
+            {/* Data Routing Settings moved to App.tsx sliding panel */}
 
             <div className={styles.footer}>
                 <p>Estimated Circuits assumes 80% safety factor on breakers.</p>
