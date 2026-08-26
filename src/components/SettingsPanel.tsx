@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { useAppState } from '../context/StateContext';
 import styles from '../styles/Settings.module.css';
 import { getAmbientLuxFromBrightness } from '../utils/powerLogic';
+import { saveMedia } from '../utils/mediaStore';
 import { DISTRO_TYPES } from './DistroWidget';
 import { initialPanels, type PanelSpec } from '../data/panelSpecs';
 import { ChevronDown, Check, Moon, Monitor, Cloud, Sun, Zap, Layers, Eye, Activity, Anchor } from 'lucide-react';
@@ -335,15 +336,22 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
     const [dimUnit, setDimUnit] = useState<'panels' | 'ft'>('panels');
 
     useEffect(() => {
-        const lastId = localStorage.getItem('lastSelectedPanelId');
+        let lastId = localStorage.getItem('lastSelectedPanelId');
+        
+        // Auto-select the first panel if none was previously selected
+        if (!lastId && availablePanels && availablePanels.length > 0) {
+            lastId = availablePanels[0].id;
+        }
+
         if (lastId && availablePanels) {
             const p = availablePanels.find(x => x.id === lastId);
             if (p) {
                 setSelectedPanelId(lastId);
+                localStorage.setItem('lastSelectedPanelId', lastId);
                 if (onSelectPanel) onSelectPanel(p);
             }
         }
-    }, [availablePanels]); // Added dependency
+    }, [availablePanels]);
 
     const handlePanelSelect = (p: PanelSpec) => {
         setSelectedPanelId(p.id);
@@ -1228,37 +1236,39 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ availablePanels = initial
             <CollapsibleSection title="Visual Aids" storageKey="spp_visuals_open" defaultOpen={false} icon={<Eye />}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
 
-                    {/* Background Image */}
-                    <div className={styles.inputGroup}>
-                        <label className={styles.inputLabel}>Background Mockup</label>
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (ev) => {
-                                        dispatch({ type: 'SET_VISUAL_CONFIG', payload: { backgroundImage: ev.target?.result as string } });
-                                    };
-                                    reader.readAsDataURL(file);
+                    {/* Graphics Switcher */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <button
+                            onClick={() => {
+                                if (state.visualizerMode === 'staging' && state.visualConfig?.showGraphicsSwitcher !== false) {
+                                    dispatch({ type: 'SET_VISUAL_CONFIG', payload: { showGraphicsSwitcher: false } });
                                 } else {
-                                    dispatch({ type: 'SET_VISUAL_CONFIG', payload: { backgroundImage: null } });
+                                    dispatch({ type: 'SET_VISUALIZER_MODE', payload: 'staging' });
+                                    dispatch({ type: 'SET_VISUAL_CONFIG', payload: { showGraphicsSwitcher: true } });
                                 }
                             }}
-                            className={styles.input}
-                            style={{ padding: '4px' }}
-                        />
-                        {state.visualConfig?.backgroundImage && (
-                            <button
-                                onClick={() => {
-                                    dispatch({ type: 'SET_VISUAL_CONFIG', payload: { backgroundImage: null } });
-                                }}
-                                style={{ marginTop: '4px', background: 'transparent', border: 'none', color: '#ef4444', fontSize: '10px', cursor: 'pointer', textAlign: 'left', padding: 0 }}
-                            >
-                                Clear Image
-                            </button>
-                        )}
+                            style={{ padding: '6px 12px', background: 'var(--accent-blue)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}
+                        >
+                            {state.visualizerMode === 'staging' && state.visualConfig?.showGraphicsSwitcher !== false ? 'Close Graphics Switcher' : 'Open Graphics Switcher'}
+                        </button>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <label style={{ flex: 1, padding: '4px 8px', background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.7rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                Upload Default Graphic
+                                <input
+                                    type="file"
+                                    accept="image/*,video/mp4"
+                                    style={{ display: 'none' }}
+                                    onChange={async (e) => {
+                                        const file = e.target.files?.[0];
+                                        if (file) {
+                                            await saveMedia(file, true);
+                                            alert('Default graphic saved! It will appear in the Graphics Switcher for all projects.');
+                                        }
+                                        e.target.value = '';
+                                    }}
+                                />
+                            </label>
+                        </div>
                     </div>
 
                     {/* Guides Toggles */}

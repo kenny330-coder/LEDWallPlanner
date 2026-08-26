@@ -42,6 +42,15 @@ export interface DistroConfig {
     customLabel?: string;      // used when type === 'custom'
 }
 
+export interface DVEState {
+    id: string; // 'dve1' | 'dve2'
+    sourceId: string | null;
+    enabled: boolean;
+    fitMode: 'fit' | 'fill';
+    boxMode: '16:9' | 'custom';
+    rect: { x: number; y: number; w: number; h: number };
+}
+
 export interface AppState {
     projectName: string;
     brightness: number; // 0-100%
@@ -77,6 +86,10 @@ export interface AppState {
     visualConfig: {
         backgroundImage: string | null;
         showBackgroundImage: boolean;
+        bgSourceId: string | null;
+        dves: DVEState[];
+        fadeDurationMs: number;
+        showGraphicsSwitcher?: boolean;
         showCenterGuides: boolean;
         showThirdsGuides: boolean;
         showCoordinates: boolean;
@@ -145,6 +158,13 @@ const defaultState: AppState = {
     visualConfig: {
         backgroundImage: null,
         showBackgroundImage: true,
+        bgSourceId: null,
+        dves: [
+            { id: 'dve1', sourceId: null, enabled: false, fitMode: 'fit', boxMode: '16:9', rect: { x: 10, y: 10, w: 30, h: 30 } },
+            { id: 'dve2', sourceId: null, enabled: false, fitMode: 'fit', boxMode: '16:9', rect: { x: 50, y: 10, w: 30, h: 30 } }
+        ],
+        fadeDurationMs: 500,
+        showGraphicsSwitcher: true,
         showCenterGuides: false,
         showThirdsGuides: false,
         showCoordinates: false,
@@ -213,6 +233,7 @@ export type Action =
     | { type: 'INIT_POWER_CIRCUITS', payload: PowerCircuit[] }
     | { type: 'CLEAR_CIRCUIT_PANELS', payload: string }
     | { type: 'SET_DISTRO_CONFIG', payload: Partial<DistroConfig> }
+    | { type: 'UPDATE_DVE', payload: { id: string, dve: Partial<DVEState> } }
     | { type: 'IMPORT_STATE', payload: AppState }
     | { type: 'UNDO' }
     | { type: 'REDO' }
@@ -232,9 +253,57 @@ interface HistoryState {
 
 /** Deep-merge a loaded/saved object with defaults to handle schema evolution. */
 export function mergeWithDefaults(loaded: Partial<AppState>): AppState {
+    const merged = { ...defaultState, ...loaded };
+    
+    if (merged.visualConfig) {
+        // Migrate old base64 backgroundImage to IndexedDB
+        if (merged.visualConfig.backgroundImage && !merged.visualConfig.bgSourceId) {
+            const bgData = merged.visualConfig.backgroundImage;
+            if (bgData.startsWith('data:image')) {
+                fetch(bgData).then(res => res.blob()).then(blob => {
+                    const file = new File([blob], 'migrated-bg.png', { type: blob.type });
+                    import('../utils/mediaStore').then(({ saveMedia }) => {
+                        saveMedia(file).then(() => {});
+                    });
+                });
+            }
+        }
+        
+        // Migrate old singular DVE to the new array
+        if (!merged.visualConfig.dves || merged.visualConfig.dves.length === 0) {
+            const legacyConfig = merged.visualConfig as any;
+            
+            // Fix old custom fitMode string if present
+            let fitMode = legacyConfig.dveFitMode || 'fit';
+            let boxMode = legacyConfig.dveBoxMode || '16:9';
+            if (fitMode === 'custom') {
+                fitMode = 'fill';
+                boxMode = 'custom';
+            }
+
+            merged.visualConfig.dves = [
+                {
+                    id: 'dve1',
+                    sourceId: legacyConfig.dveSourceId || null,
+                    enabled: legacyConfig.dveEnabled || false,
+                    fitMode,
+                    boxMode,
+                    rect: legacyConfig.dveRect || { x: 10, y: 10, w: 30, h: 30 }
+                },
+                { id: 'dve2', sourceId: null, enabled: false, fitMode: 'fit', boxMode: '16:9', rect: { x: 50, y: 10, w: 30, h: 30 } }
+            ];
+            
+            // Delete legacy properties if they exist
+            delete legacyConfig.dveSourceId;
+            delete legacyConfig.dveEnabled;
+            delete legacyConfig.dveFitMode;
+            delete legacyConfig.dveBoxMode;
+            delete legacyConfig.dveRect;
+        }
+    }
+
     return {
-        ...defaultState,
-        ...loaded,
+        ...merged,
         stageConfig:  { ...defaultState.stageConfig,  ...(loaded.stageConfig  || {}) },
         visualConfig: { ...defaultState.visualConfig, ...(loaded.visualConfig || {}) },
         dataConfig:   { ...defaultState.dataConfig,   ...(loaded.dataConfig   || {}), drawingPortId: null },
@@ -278,6 +347,16 @@ function reducer(state: AppState, action: Action): AppState {
         case 'SET_BLANKS_COUNT': return { ...state, blanksCount: action.payload };
         case 'SET_STAGE_CONFIG': return { ...state, stageConfig: { ...state.stageConfig, ...action.payload } };
         case 'SET_VISUAL_CONFIG': return { ...state, visualConfig: { ...state.visualConfig, ...action.payload } };
+        case 'UPDATE_DVE': 
+            return {
+                ...state,
+                visualConfig: {
+                    ...state.visualConfig,
+                    dves: state.visualConfig.dves.map(dve => 
+                        dve.id === action.payload.id ? { ...dve, ...action.payload.dve } : dve
+                    )
+                }
+            };
         case 'SET_VISUALIZER_MODE': return { ...state, visualizerMode: action.payload };
         case 'SET_RIGGING_CONFIG': {
             const next = { ...state.riggingConfig, ...action.payload };

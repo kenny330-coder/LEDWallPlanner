@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef } from 'react';
 import { TransformWrapper, TransformComponent, type ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { Plus, Minus, RefreshCcw, Zap, Monitor, Layers } from 'lucide-react';
+import { getMedia } from '../utils/mediaStore';
 import { useAppState } from '../context/StateContext';
 import { PixelDistanceGraph } from './PixelDistanceGraph';
 import styles from '../styles/Visualizer.module.css';
@@ -8,6 +9,170 @@ import styles from '../styles/Visualizer.module.css';
 interface VisualizerProps {
     maxPanelsPerCircuit: number;
 }
+import { type DVEState } from '../context/StateContext';
+
+const DveRenderer: React.FC<{
+    dve: DVEState;
+    visualizerMode: string;
+    screenRows: number;
+    blanksCount: number;
+    fadeDurationMs: number;
+    getMappedCoords: (x: number, y: number) => {x:number, y:number} | null;
+    dveDragState: any;
+    setDveDragState: (s: any) => void;
+    activeDveRects: Record<string, {x:number, y:number, w:number, h:number}>;
+    hoveredDveId: string | null;
+    setHoveredDveId: (id: string | null) => void;
+}> = ({ dve, visualizerMode, screenRows, blanksCount, fadeDurationMs, getMappedCoords, dveDragState, setDveDragState, activeDveRects, hoveredDveId, setHoveredDveId }) => {
+    const [media, setMedia] = useState<{ url: string, type: 'image' | 'video' } | null>(null);
+    const [layers, setLayers] = useState<{ id: string, media: { url: string, type: 'image' | 'video' } }[]>([]);
+
+    React.useEffect(() => {
+        let active = true;
+        if (dve.sourceId) {
+            getMedia(dve.sourceId).then(item => {
+                if (active && item) {
+                    setMedia({ url: URL.createObjectURL(item.blob), type: item.type });
+                } else if (active) {
+                    setMedia(null);
+                }
+            });
+        } else {
+            setMedia(null);
+        }
+        return () => { active = false; };
+    }, [dve.sourceId]);
+
+    React.useEffect(() => {
+        const timer = setTimeout(() => {
+            setLayers(prev => prev.slice(-1).filter(l => l.media.url === media?.url));
+        }, fadeDurationMs || 500);
+
+        if (media) {
+            setLayers(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), media }]);
+        }
+        return () => clearTimeout(timer);
+    }, [media?.url, fadeDurationMs]);
+
+    if (!dve.enabled && layers.length === 0) return null;
+
+    const rect = activeDveRects[dve.id] || dve.rect;
+    const isHovered = hoveredDveId === dve.id;
+    const isDragged = dveDragState?.id === dve.id;
+    const showUI = isHovered || isDragged;
+
+    return (
+        <div 
+            onMouseEnter={() => setHoveredDveId(dve.id)}
+            onMouseLeave={() => setHoveredDveId(null)}
+            onMouseDown={(e) => {
+                if (visualizerMode !== 'staging') return;
+                e.stopPropagation();
+                const coords = getMappedCoords(e.clientX, e.clientY);
+                if (coords) {
+                    setDveDragState({ id: dve.id, mode: 'move', startX: coords.x, startY: coords.y, startRect: { ...rect } });
+                }
+            }}
+            style={{
+                position: 'absolute',
+                top: `${rect.y * (screenRows / (screenRows + blanksCount))}%`,
+                left: `${rect.x}%`,
+                width: `${rect.w}%`,
+                height: `${rect.h * (screenRows / (screenRows + blanksCount))}%`,
+                zIndex: 1,
+                opacity: dve.enabled ? 1 : 0,
+                transition: isDragged ? 'none' : `opacity ${fadeDurationMs}ms ease-in-out`,
+                pointerEvents: visualizerMode === 'staging' ? 'auto' : 'none',
+                boxShadow: (dve.enabled && showUI) ? '0 10px 30px rgba(0,0,0,0.5)' : 'none',
+                border: (dve.enabled && showUI) ? '1px solid rgba(255,255,255,0.3)' : 'none',
+                cursor: 'move',
+            }}>
+            {layers.map((layer) => {
+                const isCurrent = layer.media.url === media?.url;
+                return layer.media.type === 'image' ? (
+                    <div key={layer.id} style={{
+                        position: 'absolute', top: 0, left: 0,
+                        width: '100%', height: '100%',
+                        backgroundImage: `url(${layer.media.url})`,
+                        backgroundSize: dve.fitMode === 'fit' ? 'contain' : 'cover',
+                        backgroundPosition: 'center',
+                        backgroundRepeat: 'no-repeat',
+                        pointerEvents: 'none',
+                        opacity: isCurrent ? 1 : 0,
+                        transition: `opacity ${fadeDurationMs}ms ease-in-out`
+                    }} />
+                ) : (
+                    <video
+                        key={layer.id}
+                        src={layer.media.url}
+                        autoPlay loop muted playsInline
+                        style={{
+                            position: 'absolute', top: 0, left: 0,
+                            width: '100%', height: '100%',
+                            objectFit: dve.fitMode === 'fit' ? 'contain' : 'cover',
+                            pointerEvents: 'none',
+                            opacity: isCurrent ? 1 : 0,
+                            transition: `opacity ${fadeDurationMs}ms ease-in-out`
+                        }}
+                    />
+                );
+            })}
+
+            {/* Edge and Corner Resize Handles */}
+            {dve.enabled && showUI && (
+                <>
+                    {/* Edge Handles (Invisible, thick hitboxes) */}
+                    {(['n', 's', 'e', 'w'] as const).map(edge => (
+                        <div
+                            key={edge}
+                            onMouseDown={(e) => {
+                                e.stopPropagation();
+                                const coords = getMappedCoords(e.clientX, e.clientY);
+                                if (coords) setDveDragState({ id: dve.id, mode: edge, startX: coords.x, startY: coords.y, startRect: { ...rect } });
+                            }}
+                            style={{
+                                position: 'absolute',
+                                top: edge === 'n' ? '-8px' : edge === 's' ? 'auto' : '0',
+                                bottom: edge === 's' ? '-8px' : edge === 'n' ? 'auto' : '0',
+                                left: edge === 'w' ? '-8px' : edge === 'e' ? 'auto' : '0',
+                                right: edge === 'e' ? '-8px' : edge === 'w' ? 'auto' : '0',
+                                width: edge === 'e' || edge === 'w' ? '16px' : '100%',
+                                height: edge === 'n' || edge === 's' ? '16px' : '100%',
+                                cursor: `${edge}-resize`,
+                                zIndex: 2,
+                                background: 'transparent'
+                            }}
+                        />
+                    ))}
+
+                    {/* Corner Handles (Visible) */}
+                    {(['nw', 'ne', 'sw', 'se'] as const).map(corner => (
+                        <div
+                            key={corner}
+                            onMouseDown={(e) => {
+                                e.stopPropagation();
+                                const coords = getMappedCoords(e.clientX, e.clientY);
+                                if (coords) setDveDragState({ id: dve.id, mode: corner, startX: coords.x, startY: coords.y, startRect: { ...rect } });
+                            }}
+                            style={{
+                                position: 'absolute',
+                                width: '16px', height: '16px',
+                                background: 'white',
+                                border: '1px solid black',
+                                top: corner.includes('n') ? '-8px' : 'auto',
+                                bottom: corner.includes('s') ? '-8px' : 'auto',
+                                left: corner.includes('w') ? '-8px' : 'auto',
+                                right: corner.includes('e') ? '-8px' : 'auto',
+                                cursor: `${corner}-resize`,
+                                zIndex: 3
+                            }}
+                        />
+                    ))}
+                </>
+            )}
+        </div>
+    );
+};
 
 const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
     const { state, dispatch } = useAppState();
@@ -34,6 +199,52 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
     // Data Mode States
     const [draggingFeedId, setDraggingFeedId] = useState<string | null>(null);
     const [dragStartOffset, setDragStartOffset] = useState<{ dx: number, dy: number } | null>(null);
+    
+    // Media Object URLs
+    const [bgMedia, setBgMedia] = useState<{ url: string, type: 'image' | 'video' } | null>(null);
+    const [bgLayers, setBgLayers] = useState<{ id: string, media: { url: string, type: 'image' | 'video' } }[]>([]);
+
+    React.useEffect(() => {
+        const timer = setTimeout(() => {
+            setBgLayers(prev => prev.slice(-1).filter(l => l.media.url === bgMedia?.url));
+        }, state.visualConfig.fadeDurationMs || 500);
+
+        if (bgMedia) {
+            setBgLayers(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), media: bgMedia }]);
+        }
+        return () => clearTimeout(timer);
+    }, [bgMedia?.url, state.visualConfig.fadeDurationMs]);
+
+
+
+    React.useEffect(() => {
+        let active = true;
+        
+        // Legacy background image support
+        if (state.visualConfig?.backgroundImage) {
+            setBgMedia({ url: state.visualConfig.backgroundImage, type: 'image' });
+        } else if (state.visualConfig?.bgSourceId) {
+            getMedia(state.visualConfig.bgSourceId).then(item => {
+                if (active && item) {
+                    setBgMedia({ url: URL.createObjectURL(item.blob), type: item.type });
+                } else if (active) {
+                    setBgMedia(null);
+                }
+            });
+        } else {
+            setBgMedia(null);
+        }
+        return () => { active = false; };
+    }, [state.visualConfig?.bgSourceId, state.visualConfig?.backgroundImage]);
+
+
+    // DVE Drag State
+    const [dveDragState, setDveDragState] = useState<{ id: string, mode: 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'n' | 'e' | 's' | 'w', startX: number, startY: number, startRect: {x:number, y:number, w:number, h:number} } | null>(null);
+    const [activeDveRects, setActiveDveRects] = useState<Record<string, { x: number, y: number, w: number, h: number }>>({});
+    const activeDveRectsRef = useRef(activeDveRects);
+    activeDveRectsRef.current = activeDveRects;
+    const [hoveredDveId, setHoveredDveId] = useState<string | null>(null);
+
     const lastClickedPanelRef = useRef<{r: number, c: number, activeId: string} | null>(null);
 
     // Reset view when screen dimensions change
@@ -47,10 +258,20 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
     React.useEffect(() => {
         const handleGlobalMouseUp = () => {
             setDraggingFeedId(null);
+            setDveDragState(prev => {
+                if (prev) {
+                    const finalRect = activeDveRectsRef.current[prev.id];
+                    if (finalRect) {
+                        dispatch({ type: 'UPDATE_DVE', payload: { id: prev.id, dve: { rect: finalRect } } });
+                        setActiveDveRects(r => { const next = {...r}; delete next[prev.id]; return next; });
+                    }
+                }
+                return null;
+            });
         };
         window.addEventListener('mouseup', handleGlobalMouseUp);
         return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
-    }, []);
+    }, [dispatch]);
 
     const blanks = blanksCount || 0;
     const totalRows = screenRows + blanks;
@@ -85,6 +306,109 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
 
         if (state.visualConfig?.showCoordinates) {
             setHoverCoords(coords);
+        }
+
+        if (dveDragState) {
+            const screenPixelsW = screenCols * panelPixelsW;
+            const screenPixelsH = screenRows * panelPixelsH;
+            
+            const dxPct = ((coords.x - dveDragState.startX) / screenPixelsW) * 100;
+            const dyPct = ((coords.y - dveDragState.startY) / screenPixelsH) * 100;
+            const rect = { ...dveDragState.startRect };
+            
+            const activeDveState = state.visualConfig.dves.find(d => d.id === dveDragState.id);
+            if (!activeDveState) return;
+
+            if (dveDragState.mode === 'move') {
+                rect.x += dxPct;
+                rect.y += dyPct;
+            } else if (dveDragState.mode === 'se') {
+                rect.w = Math.max(5, rect.w + dxPct);
+                if (activeDveState.boxMode === '16:9') {
+                    rect.h = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                } else {
+                    rect.h = Math.max(5, rect.h + dyPct);
+                }
+            } else if (dveDragState.mode === 'nw') {
+                const dw = Math.min(rect.w - 5, -dxPct);
+                rect.x -= dw;
+                rect.w += dw;
+                if (activeDveState.boxMode === '16:9') {
+                    const newH = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                    rect.y += (rect.h - newH); // shift y by the difference
+                    rect.h = newH;
+                } else {
+                    const dh = Math.min(rect.h - 5, -dyPct);
+                    rect.y -= dh;
+                    rect.h += dh;
+                }
+            } else if (dveDragState.mode === 'ne') {
+                rect.w = Math.max(5, rect.w + dxPct);
+                if (activeDveState.boxMode === '16:9') {
+                    const newH = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                    rect.y += (rect.h - newH);
+                    rect.h = newH;
+                } else {
+                    const dh = Math.min(rect.h - 5, -dyPct);
+                    rect.y -= dh;
+                    rect.h += dh;
+                }
+            } else if (dveDragState.mode === 'sw') {
+                const dw = Math.min(rect.w - 5, -dxPct);
+                rect.x -= dw;
+                rect.w += dw;
+                if (activeDveState.boxMode === '16:9') {
+                    rect.h = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                } else {
+                    rect.h = Math.max(5, rect.h + dyPct);
+                }
+            } else if (dveDragState.mode === 'e') {
+                rect.w = Math.max(5, rect.w + dxPct);
+                if (activeDveState.boxMode === '16:9') {
+                    rect.h = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                }
+            } else if (dveDragState.mode === 'w') {
+                const dw = Math.min(rect.w - 5, -dxPct);
+                rect.x -= dw;
+                rect.w += dw;
+                if (activeDveState.boxMode === '16:9') {
+                    rect.h = (rect.w * screenPixelsW * 9) / (screenPixelsH * 16);
+                }
+            } else if (dveDragState.mode === 's') {
+                rect.h = Math.max(5, rect.h + dyPct);
+                if (activeDveState.boxMode === '16:9') {
+                    rect.w = (rect.h * screenPixelsH * 16) / (screenPixelsW * 9);
+                }
+            } else if (dveDragState.mode === 'n') {
+                const dh = Math.min(rect.h - 5, -dyPct);
+                rect.y -= dh;
+                rect.h += dh;
+                if (activeDveState.boxMode === '16:9') {
+                    rect.w = (rect.h * screenPixelsH * 16) / (screenPixelsW * 9);
+                }
+            }
+
+            // Snapping to edges (approx 2% threshold)
+            const snapThreshold = 2;
+            if (Math.abs(rect.x) < snapThreshold) rect.x = 0;
+            if (Math.abs(rect.y) < snapThreshold) rect.y = 0;
+            if (Math.abs((rect.x + rect.w) - 100) < snapThreshold) {
+                if (dveDragState.mode === 'move') {
+                    rect.x = 100 - rect.w;
+                } else {
+                    rect.w = 100 - rect.x;
+                }
+            }
+            if (Math.abs((rect.y + rect.h) - 100) < snapThreshold) {
+                if (dveDragState.mode === 'move') {
+                    rect.y = 100 - rect.h;
+                } else {
+                    rect.h = 100 - rect.y;
+                }
+            }
+
+            // Do NOT dispatch to Redux immediately, store in local state for smooth rendering
+            setActiveDveRects(prev => ({ ...prev, [dveDragState.id]: rect }));
         }
 
         if (draggingFeedId && dragStartOffset) {
@@ -751,24 +1075,62 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
 
 
                                         {/* Active Area Background Image */}
-                                        {state.visualConfig?.backgroundImage && state.visualConfig?.showBackgroundImage !== false && (
+                                        {bgLayers.length > 0 && state.visualConfig?.showBackgroundImage !== false && (
                                             <div style={{
                                                 position: 'absolute',
                                                 top: 0,
                                                 left: 0,
                                                 width: '100%',
                                                 height: `${(screenRows / (screenRows + (blanksCount || 0))) * 100}%`,
-                                                backgroundImage: `url(${state.visualConfig.backgroundImage})`,
-                                                backgroundSize: 'cover', // Or '100% 100%' depending on preference. 'cover' with fit? User said "fit".
-                                                // Usually 'fit' means 'contain', but for mapping we want to FILL the tiles.
-                                                // 'cover' crops. '100% 100%' stretches.
-                                                // If I use 'cover', it looks nice. If I use 'contain', it leaves gaps.
-                                                // User said "placed with a 'fit' placement".
-                                                // I'll use 'cover' centering.
-                                                backgroundPosition: 'center',
-                                                zIndex: 0
-                                            }} />
+                                                zIndex: 0,
+                                                overflow: 'hidden'
+                                            }}>
+                                                {bgLayers.map((layer) => {
+                                                    const isCurrent = layer.media.url === bgMedia?.url;
+                                                    return layer.media.type === 'image' ? (
+                                                        <div key={layer.id} style={{
+                                                            position: 'absolute', top: 0, left: 0,
+                                                            width: '100%', height: '100%',
+                                                            backgroundImage: `url(${layer.media.url})`,
+                                                            backgroundSize: 'cover',
+                                                            backgroundPosition: 'center',
+                                                            opacity: isCurrent ? 1 : 0,
+                                                            transition: `opacity ${state.visualConfig.fadeDurationMs}ms ease-in-out`
+                                                        }} />
+                                                    ) : (
+                                                        <video
+                                                            key={layer.id}
+                                                            src={layer.media.url}
+                                                            autoPlay loop muted playsInline
+                                                            style={{
+                                                                position: 'absolute', top: 0, left: 0,
+                                                                width: '100%', height: '100%',
+                                                                objectFit: 'cover',
+                                                                opacity: isCurrent ? 1 : 0,
+                                                                transition: `opacity ${state.visualConfig.fadeDurationMs}ms ease-in-out`
+                                                            }}
+                                                        />
+                                                    );
+                                                })}
+                                            </div>
                                         )}
+                                        {/* DVE Layers */}
+                                        {state.visualConfig.dves.map(dve => (
+                                            <DveRenderer
+                                                key={dve.id}
+                                                dve={dve}
+                                                visualizerMode={state.visualizerMode}
+                                                screenRows={screenRows}
+                                                blanksCount={blanksCount}
+                                                fadeDurationMs={state.visualConfig.fadeDurationMs || 500}
+                                                getMappedCoords={getMappedCoords}
+                                                dveDragState={dveDragState}
+                                                setDveDragState={setDveDragState}
+                                                activeDveRects={activeDveRects}
+                                                hoveredDveId={hoveredDveId}
+                                                setHoveredDveId={setHoveredDveId}
+                                            />
+                                        ))}
 
                                         {grid.map((row, r) => (
                                             row.map((cid, c) => {
@@ -848,17 +1210,17 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                     }
                                                 } else if (isStagingMode) {
                                                     // Glow modes based on slider selection
-                                                    // Staging = Purple
+                                                    // Staging = Purple (Subtle overlay)
                                                     const bFrac = Math.max(0, Math.min(100, brightness)) / 100;
-                                                    const bgOpacity = 0.15 + bFrac * 0.25; 
-                                                    const borderOpacity = 0.25 + bFrac * 0.30; 
-                                                    const glowOpacity = 0.15 + bFrac * 0.20; 
+                                                    const bgOpacity = 0.05 + bFrac * 0.10; 
+                                                    const borderOpacity = 0.10 + bFrac * 0.20; 
+                                                    const glowOpacity = 0.05 + bFrac * 0.10; 
                                                     
                                                     const rgbColor = isDark ? '140, 60, 220' : '160, 80, 240';  // Purple
                                                     
                                                     bgColor = `rgba(${rgbColor}, ${bgOpacity.toFixed(3)})`;
                                                     cellBorder = `1px solid rgba(${rgbColor}, ${borderOpacity.toFixed(3)})`;
-                                                    cellBoxShadow = `inset 0 0 ${8 + bFrac * 12}px rgba(${rgbColor},${glowOpacity.toFixed(3)})`;
+                                                    cellBoxShadow = `inset 0 0 ${4 + bFrac * 8}px rgba(${rgbColor},${glowOpacity.toFixed(3)})`;
                                                 } else {
                                                     // Power Mode logic
                                                     const hasCustomPower = (state.powerConfig?.circuits?.length ?? 0) > 0;
@@ -903,7 +1265,7 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
 
                                                 // ── Circuit hover highlight ─────────────────────────────
                                                 // Hovered circuit gets brighter; others stay at full opacity
-                                                const isActive = hoveredCircuit !== null && cid === hoveredCircuit;
+                                                const isActive = !isStagingMode && hoveredCircuit !== null && cid === hoveredCircuit;
                                                 const cellFilter = isActive
                                                     ? 'brightness(1.55) saturate(1.30)'
                                                     : undefined;
@@ -916,7 +1278,7 @@ const Visualizer: React.FC<VisualizerProps> = ({ maxPanelsPerCircuit }) => {
                                                             if (!isBlank) handlePanelClickOrDrag(r, c, e);
                                                         }}
                                                         onMouseEnter={(e) => {
-                                                            if (!isBlank) {
+                                                            if (!isBlank && !isStagingMode) {
                                                                 setHoveredCircuit(cid);
                                                                 if ((state.dataConfig?.drawingPortId || state.powerConfig?.drawingCircuitId) && e.buttons === 1) {
                                                                     handlePanelClickOrDrag(r, c, e);

@@ -2,13 +2,14 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { AppProvider, useAppState } from './context/StateContext';
 import SettingsPanel from './components/SettingsPanel';
 import Visualizer from './components/Visualizer';
+import { GraphicsSwitcher } from './components/GraphicsSwitcher';
 import PowerChart from './components/PowerChart';
 import PanelLibraryModal from './components/PanelLibraryModal';
 import { initialPanels, type PanelSpec } from './data/panelSpecs';
 import { getDistroSpec } from './components/DistroWidget';
 
 import { getWattsPerPanel } from './utils/powerLogic';
-import { Download, Zap, Sun, Moon, Package, Cpu, Save, Upload, Settings as SettingsIcon, MonitorSmartphone, Monitor, Network, Wand2, RotateCcw, Undo2, Redo2, FilePlus } from 'lucide-react';
+import { Download, Zap, Sun, Moon, Package, Cpu, Save, Upload, Settings as SettingsIcon, MonitorSmartphone, Monitor, Network, Wand2, RotateCcw, Undo2, Redo2, FilePlus, Menu } from 'lucide-react';
 import { generateSpecSheet } from './utils/generateSpecSheet';
 import styles from './styles/App.module.css';
 import pkg from '../package.json';
@@ -57,6 +58,7 @@ const DashboardContent: React.FC = () => {
   };
 
   // Library State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [availablePanels, setAvailablePanels] = useState<PanelSpec[]>(() => {
     try {
@@ -238,9 +240,13 @@ const DashboardContent: React.FC = () => {
     dispatch({ type: 'SET_BASEPLATE_HEIGHT', payload: panel.baseplateHeightMm ?? 102 });
   };
 
+  const [resetKey, setResetKey] = useState(0);
+
   const handleNewProject = () => {
     if (window.confirm('Start a new project? Your current project is auto-saved and can be restored by pressing Cancel then reopening, but the undo history will be cleared.')) {
       dispatch({ type: 'RESET_STATE' });
+      localStorage.removeItem('lastSelectedPanelId');
+      setResetKey(prev => prev + 1);
     }
   };
 
@@ -406,7 +412,45 @@ const DashboardContent: React.FC = () => {
           filter: 'blur(60px)', borderRadius: '50%'
         }} />
       </div>
-      <SettingsPanel availablePanels={availablePanels} onSelectPanel={handleSelectPanel} />
+
+      <button
+        onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+        title="Toggle Settings Pane"
+        style={{ 
+          position: 'absolute',
+          top: '0.75rem',
+          left: isSettingsOpen ? '19.2rem' : '0.75rem',
+          zIndex: 5001,
+          background: 'transparent', 
+          border: 'none', 
+          color: 'var(--text-primary)', 
+          cursor: 'pointer', 
+          WebkitAppRegion: 'no-drag',
+          padding: '0.4rem',
+          borderRadius: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'all 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+        } as React.CSSProperties}
+        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-highlight)'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      >
+        <Menu size={20} />
+      </button>
+
+      <div style={{
+        width: isSettingsOpen ? '22rem' : '0',
+        opacity: isSettingsOpen ? 1 : 0,
+        transform: isSettingsOpen ? 'translateX(0)' : 'translateX(-22rem)',
+        transition: 'all 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+        flexShrink: 0,
+        zIndex: 10
+      }}>
+        <div style={{ width: '22rem', height: '100%' }}>
+          <SettingsPanel key={resetKey} availablePanels={availablePanels} onSelectPanel={handleSelectPanel} />
+        </div>
+      </div>
 
       <PanelLibraryModal
         isOpen={isLibraryOpen}
@@ -782,8 +826,9 @@ const DashboardContent: React.FC = () => {
             <Visualizer maxPanelsPerCircuit={saferMaxPanelsPerCircuit} />
           </div>
 
-          {/* Single sliding details panel — shows power OR data content depending on mode */}
-          <div className={`${styles.detailsCol} ${(state.visualizerMode !== 'power' && state.visualizerMode !== 'data') ? styles.detailsColHidden : ''}`}>
+          {/* --- Right Details / Actions Column --- */}
+          <div className={`${styles.detailsCol} ${state.visualizerMode === 'power' ? '' : state.visualizerMode === 'data' ? '' : (state.visualizerMode === 'staging' && state.visualConfig?.showGraphicsSwitcher !== false) ? '' : styles.detailsColHidden}`}>
+            {state.visualizerMode === 'staging' && state.visualConfig?.showGraphicsSwitcher !== false && <GraphicsSwitcher />}
 
             {/* ─── POWER MODE ─── */}
             {state.visualizerMode === 'power' && (
@@ -814,56 +859,10 @@ const DashboardContent: React.FC = () => {
                         >+ Circuit</button>
                         <button
                           onClick={() => {
-                            const newCircuits: { id: string, color: string, panelIds: string[] }[] = [];
-                            let currentCircuitIdx = 0;
-                            
-                            const getCircuit = (idx: number) => {
-                                if (!newCircuits[idx]) {
-                                    newCircuits[idx] = { id: `circuit-autofill-${idx}-${Date.now()}`, color: CIRCUIT_COLORS[idx % CIRCUIT_COLORS.length], panelIds: [] };
-                                }
-                                return newCircuits[idx];
-                            };
-
-                            const numFullSegmentsPwr = Math.floor(state.screenCols / saferMaxPanelsPerCircuit);
-                            const fullColsPwr = numFullSegmentsPwr * saferMaxPanelsPerCircuit;
-
-                            for (let r = 0; r < state.screenRows; r++) {
-                                for (let s = 0; s < numFullSegmentsPwr; s++) {
-                                    const startCol = s * saferMaxPanelsPerCircuit;
-                                    const circuit = getCircuit(currentCircuitIdx);
-                                    for (let i = 0; i < saferMaxPanelsPerCircuit; i++) {
-                                        circuit.panelIds.push(`${r}-${startCol + i}`);
-                                    }
-                                    currentCircuitIdx++;
-                                }
-                            }
-
-                            const remWidthPwr = state.screenCols - fullColsPwr;
-                            if (remWidthPwr > 0) {
-                                let panelsInCurrentRemCircuit = 0;
-                                for (let r = 0; r < state.screenRows; r++) {
-                                    const isRowSnakeRight = (r % 2 === 0);
-                                    const cols = [];
-                                    if (isRowSnakeRight) {
-                                        for (let c = fullColsPwr; c < state.screenCols; c++) cols.push(c);
-                                    } else {
-                                        for (let c = state.screenCols - 1; c >= fullColsPwr; c--) cols.push(c);
-                                    }
-                                    for (const c of cols) {
-                                        if (panelsInCurrentRemCircuit >= saferMaxPanelsPerCircuit) {
-                                            currentCircuitIdx++;
-                                            panelsInCurrentRemCircuit = 0;
-                                        }
-                                        getCircuit(currentCircuitIdx).panelIds.push(`${r}-${c}`);
-                                        panelsInCurrentRemCircuit++;
-                                    }
-                                }
-                            }
-
-                            dispatch({ type: 'INIT_POWER_CIRCUITS', payload: newCircuits });
+                            dispatch({ type: 'INIT_POWER_CIRCUITS', payload: [] });
                           }}
                           style={{ padding: '2px 8px', fontSize: '0.85rem', fontWeight: 600, background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)', border: '1px dashed var(--glass-border)', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                          title="Auto-fill panels using horizontal strings and snake routing"
+                          title="Revert to dynamic auto-calculated paths"
                         ><Wand2 size={14} strokeWidth={2.5} /></button>
                         <button
                           onClick={() => {
@@ -1170,64 +1169,11 @@ const DashboardContent: React.FC = () => {
                       style={{ padding: '2px 8px', fontSize: '0.65rem', fontWeight: 600, background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)', border: '1px dashed var(--glass-border)', borderRadius: '4px', cursor: 'pointer' }}
                     >+ Port</button>
                     <button
-                      onClick={() => {
-                        const portColors = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#f97316','#ec4899','#84cc16','#a78bfa'];
-                        const panelPixels = state.panelPixelsW * state.panelPixelsH;
-                        const maxPanelsPerPort = Math.floor(650000 / panelPixels);
-                        const numFullSegments = Math.floor(state.screenCols / maxPanelsPerPort);
-                        const fullCols = numFullSegments * maxPanelsPerPort;
-                        
-                        const newPorts: { id: string, color: string, panelIds: string[] }[] = [];
-                        let currentPortIdx = 0;
-                        
-                        const getPort = (idx: number) => {
-                            if (!newPorts[idx]) {
-                                newPorts[idx] = { id: `port-autofill-${idx}-${Date.now()}`, color: portColors[idx % portColors.length], panelIds: [] };
-                            }
-                            return newPorts[idx];
-                        };
-
-                        // 1. Process "Full Chains" - Fill in rows as far as we can with complete strings
-                        for (let r = 0; r < state.screenRows; r++) {
-                            for (let s = 0; s < numFullSegments; s++) {
-                                const startCol = s * maxPanelsPerPort;
-                                const port = getPort(currentPortIdx);
-                                for (let i = 0; i < maxPanelsPerPort; i++) {
-                                    port.panelIds.push(`${r}-${startCol + i}`);
-                                }
-                                currentPortIdx++;
-                            }
-                        }
-                        
-                        // 2. Process Remainder - Finish remaining right hand portion with a horizontal snake
-                        const remWidth = state.screenCols - fullCols;
-                        if (remWidth > 0) {
-                            let panelsInCurrentRemPort = 0;
-                            
-                            for (let r = 0; r < state.screenRows; r++) {
-                                const isRowSnakeRight = (r % 2 === 0);
-                                const cols = [];
-                                if (isRowSnakeRight) {
-                                    for (let c = fullCols; c < state.screenCols; c++) cols.push(c);
-                                } else {
-                                    for (let c = state.screenCols - 1; c >= fullCols; c--) cols.push(c);
-                                }
-                                
-                                for (const c of cols) {
-                                    if (panelsInCurrentRemPort >= maxPanelsPerPort) {
-                                        currentPortIdx++;
-                                        panelsInCurrentRemPort = 0;
-                                    }
-                                    getPort(currentPortIdx).panelIds.push(`${r}-${c}`);
-                                    panelsInCurrentRemPort++;
-                                }
-                            }
-                        }
-                        
-                        dispatch({ type: 'INIT_DATA_PORTS', payload: newPorts });
-                      }}
+                          onClick={() => {
+                            dispatch({ type: 'INIT_DATA_PORTS', payload: [] });
+                          }}
                       style={{ padding: '2px 8px', fontSize: '0.65rem', fontWeight: 600, background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)', border: '1px dashed var(--glass-border)', borderRadius: '4px', cursor: 'pointer' }}
-                      title="Auto-fill panels using horizontal strings and snake routing"
+                      title="Revert to dynamic auto-calculated paths"
                     ><Wand2 size={14} strokeWidth={2.5} /></button>
                     <button
                       onClick={() => {
